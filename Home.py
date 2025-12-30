@@ -17,10 +17,6 @@ st.markdown("""
 
 Esta aplicación centraliza todas las herramientas de análisis para la gestión del camping.
 Utiliza el **menú de la izquierda** para navegar entre las diferentes herramientas disponibles.
-
-#### Módulos disponibles actualmente:
-* **📊 Dashboard Principal:** Tu script de análisis actual.
-* **📈 Futuros Módulos:** Espacio reservado para nuevas herramientas.
 """)
 
 # 4. (Opcional) Puedes poner una imagen bonita o métricas rápidas aquí
