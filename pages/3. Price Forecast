@@ -1,128 +1,161 @@
 import pandas as pd
-import glob
 import os
 from datetime import datetime, timedelta
+# import tkinter as tk # No longer needed
+# from tkinter import filedialog # No longer needed
+# from tkinter import messagebox # No longer needed
+from google.colab import files # New import for Colab file operations
 
-def cargar_datos_historicos(ruta_carpeta):
+def seleccionar_archivos():
     """
-    Carga todos los archivos .xlsx de una carpeta y los combina.
-    Asume que los Excel tienen columnas: 'Fecha', 'Precio', 'Ocupacion'
-    (Ocupacion debe estar en formato decimal, ej: 0.85 para 85%)
+    Abre una interfaz para que el usuario seleccione sus archivos Excel
+    en el entorno de Google Colab.
     """
-    archivos = glob.glob(os.path.join(ruta_carpeta, "*.xlsx"))
+    print("Por favor, selecciona tus archivos Excel históricos (Historial de 3 años).")
+    # Use Colab's file upload utility
+    uploaded = files.upload()
+
+    rutas_archivos = []
+    for filename, content in uploaded.items():
+        # Save the uploaded content to a temporary file in the Colab environment
+        with open(filename, 'wb') as f:
+            f.write(content)
+        rutas_archivos.append(filename) # Store the path to the saved file
+
+    # No root window is created, so return None
+    return None, rutas_archivos
+
+def cargar_datos_seleccionados(rutas_archivos):
+    """
+    Lee los archivos seleccionados por el usuario.
+    """
     lista_dfs = []
-    
-    print(f"Cargando {len(archivos)} archivos históricos...")
-    
-    for archivo in archivos:
+
+    if not rutas_archivos:
+        return None
+
+    print(f"Procesando {len(rutas_archivos)} archivos seleccionados...")
+
+    for archivo in rutas_archivos:
         try:
             df = pd.read_excel(archivo)
-            # Estandarizamos nombres de columnas para evitar errores
+            # Limpiamos nombres de columnas (quita espacios extra y pone mayúscula inicial)
             df.columns = [c.strip().capitalize() for c in df.columns]
             lista_dfs.append(df)
+            print(f" -> Leído correctamente: {os.path.basename(archivo)}")
         except Exception as e:
-            print(f"Error leyendo {archivo}: {e}")
-            
+            print(f" -> Error leyendo {os.path.basename(archivo)}: {e}")
+
     if not lista_dfs:
         return None
-        
+
+    # Unimos todo en una sola tabla
     df_total = pd.concat(lista_dfs, ignore_index=True)
-    df_total['Fecha'] = pd.to_datetime(df_total['Fecha'])
+
+    # Aseguramos formato fecha
+    if 'Fecha' in df_total.columns:
+        df_total['Fecha'] = pd.to_datetime(df_total['Fecha'])
+    else:
+        # Si por alguna razón la columna no se llama 'Fecha'
+        print("ERROR: No se encontró la columna 'Fecha' en los Excel.")
+        return None
+
     return df_total
 
 def logica_revenue_manager(precio_base, ocupacion_historica):
     """
-    Aplica reglas heurísticas para definir el nuevo precio
-    basado en el comportamiento histórico.
+    Lógica experta para definir precios 2026.
     """
     nuevo_precio = precio_base
     accion = "Mantener"
-    
-    # Lógica de precios dinámica (Yield Management)
+
+    # Reglas de negocio (Revenue Management)
     if ocupacion_historica >= 0.90:
-        # Demanda muy alta: Subir precio agresivamente para capturar mayor ADR
-        nuevo_precio = precio_base * 1.15 
-        accion = "Subida Agresiva (+15%)"
+        nuevo_precio = precio_base * 1.15
+        accion = "Subida Agresiva (+15%) - Alta Demanda"
     elif 0.75 <= ocupacion_historica < 0.90:
-        # Demanda saludable: Subida moderada
         nuevo_precio = precio_base * 1.08
         accion = "Subida Moderada (+8%)"
     elif 0.50 <= ocupacion_historica < 0.75:
-        # Demanda normal: Ajuste por inflación/IPC (aprox 3%)
         nuevo_precio = precio_base * 1.03
         accion = "Ajuste IPC (+3%)"
     elif ocupacion_historica < 0.50:
-        # Demanda baja: Estrategia de volumen (bajar precio ligeramente)
-        # Pero establecemos un suelo (nunca bajar más del 5%)
+        # Suelo de precio: nunca bajar más del 5%
         nuevo_precio = precio_base * 0.95
-        accion = "Bajada Estimulo (-5%)"
-        
+        accion = "Bajada Estimulo (-5%) - Baja Demanda"
+
     return round(nuevo_precio, 2), accion
 
 def generar_proyeccion_2026(df_historico):
-    print("Analizando patrones y generando proyección para 2026...")
-    
-    # Crear columna auxiliar Mes-Dia para comparar años distintos
+    print("\n--- Generando Estrategia 2026 ---")
+
+    # Crear clave Mes-Dia para agrupar años distintos
     df_historico['MesDia'] = df_historico['Fecha'].dt.strftime('%m-%d')
-    
-    # Calcular promedios históricos por día calendario
-    # Esto nos dice: "¿Qué pasa normalmente el 15 de agosto?"
+
+    # Calculamos la "media histórica" de cada día del año
     stats_diarios = df_historico.groupby('MesDia').agg({
         'Precio': 'mean',
         'Ocupacion': 'mean'
     }).reset_index()
-    
-    # Definir rango de fechas 2026 (15 mayo - 13 septiembre)
+
+    # Temporada 2026: 15 mayo al 13 septiembre
     inicio = datetime(2026, 5, 15)
     fin = datetime(2026, 9, 13)
     dias_totales = (fin - inicio).days + 1
-    
+
     proyeccion = []
-    
+
     for i in range(dias_totales):
         fecha_actual = inicio + timedelta(days=i)
         mes_dia_actual = fecha_actual.strftime('%m-%d')
-        
-        # Buscar datos históricos para este día
+
+        # Buscamos qué pasó históricamente en este día (ej: 15 de Mayo)
         datos_dia = stats_diarios[stats_diarios['MesDia'] == mes_dia_actual]
-        
+
         if not datos_dia.empty:
             adr_historico = datos_dia.iloc[0]['Precio']
             occ_historica = datos_dia.iloc[0]['Ocupacion']
-            
-            # Aplicar el cerebro del Revenue Manager
+
+            # Aplicamos la IA de precios
             precio_optimo, accion = logica_revenue_manager(adr_historico, occ_historica)
-            
+
             proyeccion.append({
                 'Fecha 2026': fecha_actual.strftime('%Y-%m-%d'),
-                'Día Semana': fecha_actual.strftime('%A'),
-                'ADR Histórico Promedio': round(adr_historico, 2),
+                'Día Semana': fecha_actual.strftime('%A'), # Día de la semana (Lunes, Martes...)
+                'ADR Histórico': round(adr_historico, 2),
                 'Ocupación Histórica %': round(occ_historica * 100, 1),
-                'Precio Recomendado 2026': precio_optimo,
-                'Estrategia Aplicada': accion
+                'PRECIO RECOMENDADO': precio_optimo,
+                'Estrategia': accion
             })
-    
+
     return pd.DataFrame(proyeccion)
 
-# --- EJECUCIÓN PRINCIPAL ---
+# --- BLOQUE PRINCIPAL ---
+if __name__ == "__main__":
+    # 1. Pedir al usuario que seleccione los archivos
+    root_window, archivos = seleccionar_archivos()
 
-# 1. Crear carpeta 'datos' si no existe y pedir al usuario que ponga los archivos
-if not os.path.exists('datos'):
-    os.makedirs('datos')
-    print("IMPORTANTE: He creado una carpeta llamada 'datos'.")
-    print("Por favor, coloca tus archivos Excel históricos dentro de ella y vuelve a ejecutar el script.")
-else:
-    # 2. Cargar datos
-    df_historia = cargar_datos_historicos('datos')
-    
-    if df_historia is not None:
-        # 3. Generar proyección
-        df_final = generar_proyeccion_2026(df_historia)
-        
-        # 4. Guardar resultado
-        nombre_salida = 'Estrategia_Precios_2026.xlsx'
-        df_final.to_excel(nombre_salida, index=False)
-        print(f"\n¡Éxito! Se ha generado el archivo '{nombre_salida}' con los precios optimizados.")
-        print(df_final.head()) # Muestra las primeras 5 filas
+    if archivos:
+        # 2. Cargar y procesar datos
+        df_historia = cargar_datos_seleccionados(archivos)
+
+        if df_historia is not None:
+            # 3. Generar la estrategia
+            df_final = generar_proyeccion_2026(df_historia)
+
+            # 4. Guardar archivo final
+            nombre_salida = 'Estrategia_Precios_2026_Final.xlsx'
+            try:
+                df_final.to_excel(nombre_salida, index=False)
+                print(f"\n¡LISTO! Archivo generado: {nombre_salida}")
+                print(f"Éxito: Proceso terminado.\nSe ha creado el archivo: {nombre_salida}")
+                # Offer to download the file in Colab
+                files.download(nombre_salida)
+            except PermissionError:
+                print(f"Error: No pude guardar el archivo.\nCierra '{nombre_salida}' si lo tienes abierto.")
+        else:
+            print("Atención: Los archivos seleccionados no tenían el formato correcto o estaban vacíos.")
     else:
-        print("No se encontraron archivos .xlsx en la carpeta 'datos'.")
+        print("No se seleccionaron archivos. Programa finalizado.")
+
+    # root_window.destroy() # No longer needed as no Tkinter window is created
