@@ -1,185 +1,191 @@
+import streamlit as st
 import pandas as pd
-import os
-import glob
-import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
+import io
 
-# NOTA: En Codespaces no usamos 'google.colab' ni 'tkinter'.
-# El script buscará archivos directamente en la carpeta donde se ejecuta.
+# --- CONFIGURACIÓN DE LA PÁGINA ---
+st.set_page_config(page_title="Forecasting 2026", layout="wide")
 
-def buscar_archivos_locales():
-    """
-    Busca automáticamente archivos .xlsx y .csv en la carpeta actual.
-    """
-    print("--- PASO 1: BUSCANDO ARCHIVOS ---")
-    
-    # Busca todos los Excel y CSV en la carpeta actual
-    archivos_excel = glob.glob("*.xlsx")
-    archivos_csv = glob.glob("*.csv")
-    
-    todos_los_archivos = archivos_excel + archivos_csv
-    
-    # Filtramos para no leernos a nosotros mismos (el archivo de salida)
-    archivos_validos = [f for f in todos_los_archivos if "Estrategia_Precios" not in f]
-    
-    if not archivos_validos:
-        print("❌ No encontré archivos de datos.")
-        print("ℹ️  Instrucción: Arrastra tus archivos .csv o .xlsx a la barra lateral izquierda de este editor.")
-        return []
-    
-    print(f"✅ Archivos detectados: {archivos_validos}")
-    return archivos_validos
+st.title("🏨 Revenue Manager AI - Estrategia 2026")
+st.markdown("""
+Esta herramienta analiza tu histórico (2023, 2024, 2025) y genera una estrategia de precios 
+para la temporada 2026 (15 de Mayo - 13 de Septiembre).
+""")
 
-def leer_archivo_robusto(ruta):
-    """
-    Intenta leer el archivo probando diferentes formatos.
-    """
-    ext = os.path.splitext(ruta)[1].lower()
+# --- BARRA LATERAL (CONFIGURACIÓN) ---
+with st.sidebar:
+    st.header("⚙️ Parámetros Revenue")
+    st.write("Ajusta la sensibilidad del algoritmo:")
+    
+    umbral_alto = st.slider("Umbral Ocupación Alta (%)", 80, 99, 90, help="Si supera este %, subirá precio agresivamente.")
+    umbral_bajo = st.slider("Umbral Ocupación Baja (%)", 10, 60, 50, help="Si baja de este %, bajará precio para estimular.")
+    
+    st.info("Sube tus archivos .csv o .xlsx en el panel principal.")
+
+# --- FUNCIONES DE LÓGICA ---
+
+def leer_archivo_robusto(file):
+    """Lee Excel o CSV intentando detectar el formato español."""
     try:
-        if ext == '.xlsx':
-            return pd.read_excel(ruta)
-        elif ext == '.csv':
-            try:
-                # Intento 1: CSV estándar
-                return pd.read_csv(ruta)
-            except:
-                pass
-            # Intento 2: Formato Español
-            return pd.read_csv(ruta, sep=';', decimal=',')
+        if file.name.endswith('.xlsx'):
+            return pd.read_excel(file)
+        elif file.name.endswith('.csv'):
+            # Truco: leemos los primeros bytes para ver si usa ; o ,
+            content = file.getvalue().decode('utf-8', errors='ignore')
+            sep = ';' if ';' in content.splitlines()[0] else ','
+            dec = ',' if sep == ';' else '.'
+            
+            # Volvemos al inicio del archivo para leerlo bien
+            file.seek(0)
+            return pd.read_csv(file, sep=sep, decimal=dec)
     except Exception as e:
-        print(f"Error leyendo {ruta}: {e}")
+        st.error(f"Error leyendo {file.name}: {e}")
         return None
 
-def normalizar_columnas(df):
-    """
-    Estandariza los nombres de las columnas (Fecha, Precio, Ocupacion).
-    """
+def normalizar_datos(df):
+    """Limpia nombres de columnas y datos."""
+    # Estandarizar columnas
     mapa = {
         'fecha': 'Fecha', 'date': 'Fecha', 
-        'precio': 'Precio', 'adr': 'Precio', 'pvn': 'Precio',
+        'precio': 'Precio', 'adr': 'Precio', 
         'ocupacion': 'Ocupacion', 'occ': 'Ocupacion', '% ocupacion': 'Ocupacion'
     }
-    
     df.columns = [c.strip().lower() for c in df.columns]
     
-    nuevo_mapa = {}
+    # Renombrar columnas encontradas
+    cols_renombradas = {}
     for col in df.columns:
-        for clave, valor in mapa.items():
-            if clave in col:
-                nuevo_mapa[col] = valor
+        for k, v in mapa.items():
+            if k in col:
+                cols_renombradas[col] = v
                 break
+    df = df.rename(columns=cols_renombradas)
     
-    if nuevo_mapa:
-        df = df.rename(columns=nuevo_mapa)
+    # Validar
+    if not {'Fecha', 'Precio', 'Ocupacion'}.issubset(df.columns):
+        return None
+
+    # Limpiar simbolos € y %
+    for col in ['Precio', 'Ocupacion']:
+        if df[col].dtype == object:
+            df[col] = df[col].astype(str).str.replace('€','').str.replace('%','').str.replace(',','.').str.strip()
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+    
+    # Convertir fecha
+    df['Fecha'] = pd.to_datetime(df['Fecha'], dayfirst=True, errors='coerce')
+    df = df.dropna(subset=['Fecha']) # Eliminar fechas invalidas
+    
     return df
 
-def cargar_datos(archivos):
-    lista_dfs = []
-    print(f"\nProcesando {len(archivos)} archivos...")
+def aplicar_yield_management(precio_base, ocupacion):
+    """Aplica las reglas definidas en el sidebar."""
+    ocupacion_decimal = ocupacion / 100 if ocupacion > 1 else ocupacion
     
-    for archivo in archivos:
-        df = leer_archivo_robusto(archivo)
+    # Usamos los sliders del sidebar
+    if ocupacion_decimal >= (umbral_alto / 100):
+        return precio_base * 1.15, "🔥 Subida Agresiva (+15%)"
+    elif 0.75 <= ocupacion_decimal < (umbral_alto / 100):
+        return precio_base * 1.08, "📈 Subida Moderada (+8%)"
+    elif (umbral_bajo / 100) <= ocupacion_decimal < 0.75:
+        return precio_base * 1.03, "🛡️ Ajuste IPC (+3%)"
+    else:
+        return precio_base * 0.95, "🔻 Bajada Estímulo (-5%)"
+
+# --- INTERFAZ PRINCIPAL ---
+
+uploaded_files = st.file_uploader(
+    "Arrastra aquí tus archivos históricos (2023, 2024, 2025...)", 
+    type=['xlsx', 'csv'], 
+    accept_multiple_files=True
+)
+
+if uploaded_files:
+    all_data = []
+    st.write("---")
+    progreso = st.progress(0)
+    
+    for i, file in enumerate(uploaded_files):
+        df = leer_archivo_robusto(file)
         if df is not None:
-            df = normalizar_columnas(df)
+            df = normalizar_datos(df)
+            if df is not None:
+                all_data.append(df)
+        progreso.progress((i + 1) / len(uploaded_files))
+    
+    if all_data:
+        df_total = pd.concat(all_data, ignore_index=True)
+        
+        # Corregir porcentaje globalmente si es necesario
+        df_total['Ocupacion'] = df_total['Ocupacion'].fillna(0)
+        if df_total['Ocupacion'].max() > 1.5:
+            df_total['Ocupacion'] = df_total['Ocupacion'] / 100
+
+        # --- CÁLCULOS ---
+        df_total['MesDia'] = df_total['Fecha'].dt.strftime('%m-%d')
+        stats = df_total.groupby('MesDia')[['Precio', 'Ocupacion']].mean().reset_index()
+        
+        # Generar fechas 2026
+        inicio = datetime(2026, 5, 15)
+        fin = datetime(2026, 9, 13)
+        dias = (fin - inicio).days + 1
+        
+        proyeccion = []
+        for i in range(dias):
+            fecha = inicio + timedelta(days=i)
+            mes_dia = fecha.strftime('%m-%d')
+            row = stats[stats['MesDia'] == mes_dia]
             
-            if {'Fecha', 'Precio', 'Ocupacion'}.issubset(df.columns):
-                # Limpieza de simbolos € y %
-                for col in ['Precio', 'Ocupacion']:
-                    if df[col].dtype == object:
-                        df[col] = df[col].astype(str).str.replace('€', '').str.replace('%', '').str.replace(',', '.')
-                        df[col] = pd.to_numeric(df[col], errors='coerce')
+            if not row.empty:
+                adr_hist = row.iloc[0]['Precio']
+                occ_hist = row.iloc[0]['Ocupacion']
+                nuevo_precio, estrategia = aplicar_yield_management(adr_hist, occ_hist)
                 
-                lista_dfs.append(df)
-            else:
-                print(f"⚠️ Saltando {archivo}: No tiene columnas Fecha/Precio/Ocupacion")
-    
-    if not lista_dfs: return None
-    
-    df_total = pd.concat(lista_dfs, ignore_index=True)
-    df_total['Fecha'] = pd.to_datetime(df_total['Fecha'], dayfirst=True)
-    
-    # Corrección de porcentaje > 1.5
-    df_total['Ocupacion'] = df_total['Ocupacion'].fillna(0)
-    if df_total['Ocupacion'].max() > 1.5:
-        print("ℹ️  Normalizando ocupación (dividiendo por 100)...")
-        df_total['Ocupacion'] = df_total['Ocupacion'] / 100
+                proyeccion.append({
+                    'Fecha': fecha,
+                    'Día': fecha.strftime('%A'), # Nombre del día
+                    'ADR Histórico': round(adr_hist, 2),
+                    'Ocupación Histórica (%)': round(occ_hist * 100, 1),
+                    'Precio Recomendado 2026': round(nuevo_precio, 2),
+                    'Estrategia': estrategia
+                })
         
-    return df_total
-
-def logica_revenue_manager(precio_base, ocupacion_historica):
-    nuevo_precio = precio_base
-    accion = "Mantener"
-    
-    if ocupacion_historica >= 0.90:
-        nuevo_precio = precio_base * 1.15 
-        accion = "Subida Agresiva (+15%)"
-    elif 0.75 <= ocupacion_historica < 0.90:
-        nuevo_precio = precio_base * 1.08
-        accion = "Subida Moderada (+8%)"
-    elif 0.50 <= ocupacion_historica < 0.75:
-        nuevo_precio = precio_base * 1.03
-        accion = "Ajuste IPC (+3%)"
-    elif ocupacion_historica < 0.50:
-        nuevo_precio = precio_base * 0.95
-        accion = "Bajada Estimulo (-5%)"
-        
-    return round(nuevo_precio, 2), accion
-
-def generar_proyeccion_2026(df_historico):
-    print("\n--- PASO 2: CALCULANDO ESTRATEGIA 2026 ---")
-    df_historico['MesDia'] = df_historico['Fecha'].dt.strftime('%m-%d')
-    
-    stats = df_historico.groupby('MesDia').agg({'Precio': 'mean', 'Ocupacion': 'mean'}).reset_index()
-    
-    inicio = datetime(2026, 5, 15)
-    fin = datetime(2026, 9, 13)
-    dias = (fin - inicio).days + 1
-    
-    proyeccion = []
-    
-    for i in range(dias):
-        fecha = inicio + timedelta(days=i)
-        mes_dia = fecha.strftime('%m-%d')
-        dato = stats[stats['MesDia'] == mes_dia]
-        
-        if not dato.empty:
-            adr, occ = dato.iloc[0]['Precio'], dato.iloc[0]['Ocupacion']
-            precio, accion = logica_revenue_manager(adr, occ)
+        if proyeccion:
+            df_final = pd.DataFrame(proyeccion)
             
-            proyeccion.append({
-                'Fecha': fecha,
-                'Fecha Texto': fecha.strftime('%Y-%m-%d'),
-                'Día': fecha.strftime('%A'),
-                'ADR Histórico': round(adr, 2),
-                'Ocupación %': round(occ * 100, 1),
-                'Precio Recomendado': precio,
-                'Estrategia': accion
-            })
+            # --- RESULTADOS ---
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Días Proyectados", len(df_final))
+            col2.metric("ADR Medio 2026", f"{df_final['Precio Recomendado 2026'].mean():.2f}€")
+            dif_precio = df_final['Precio Recomendado 2026'].mean() - df_final['ADR Histórico'].mean()
+            col3.metric("Incremento Medio", f"{dif_precio:.2f}€", delta_color="normal")
             
-    return pd.DataFrame(proyeccion)
-
-def finalizar_proceso(df):
-    nombre_salida = 'PlatjaBrava_Estrategia_2026.xlsx'
-    
-    # Generar Gráfico y guardarlo como imagen (Codespaces no muestra ventanas)
-    plt.figure(figsize=(12, 6))
-    plt.plot(df['Fecha'], df['ADR Histórico'], label='Histórico', linestyle='--', alpha=0.7)
-    plt.plot(df['Fecha'], df['Precio Recomendado'], label='Proyección 2026', linewidth=2.5)
-    plt.title('Estrategia de Precios 2026')
-    plt.legend()
-    plt.savefig('Grafico_Estrategia.png') # Guardamos imagen en vez de mostrarla
-    print("\n✅ Gráfico guardado como 'Grafico_Estrategia.png'")
-    
-    # Guardar Excel
-    df.drop(columns=['Fecha']).to_excel(nombre_salida, index=False)
-    print(f"✅ Excel generado: {nombre_salida}")
-    print("👉 Busca estos archivos en la barra lateral izquierda para descargarlos.")
-
-# --- EJECUCIÓN ---
-if __name__ == "__main__":
-    archivos = buscar_archivos_locales()
-    if archivos:
-        df = cargar_datos(archivos)
-        if df is not None:
-            final = generar_proyeccion_2026(df)
-            finalizar_proceso(final)
+            # --- GRÁFICO ---
+            st.subheader("📊 Evolución de Precios: Histórico vs 2026")
+            
+            chart_data = df_final[['Fecha', 'ADR Histórico', 'Precio Recomendado 2026']].set_index('Fecha')
+            st.line_chart(chart_data, color=["#A9A9A9", "#00FF00"]) # Gris para histórico, Verde para nuevo
+            
+            # --- TABLA Y DESCARGA ---
+            st.subheader("📋 Detalle Diario")
+            st.dataframe(df_final.style.format({
+                'ADR Histórico': '{:.2f}€',
+                'Ocupación Histórica (%)': '{:.1f}%',
+                'Precio Recomendado 2026': '{:.2f}€'
+            }))
+            
+            # Botón Excel
+            buffer = io.BytesIO()
+            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                df_final.to_excel(writer, index=False, sheet_name='Estrategia 2026')
+            
+            st.download_button(
+                label="📥 Descargar Excel con Estrategia",
+                data=buffer.getvalue(),
+                file_name="Estrategia_Precios_2026.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+            
+        else:
+            st.warning("Las fechas de tus archivos no coinciden con la temporada Mayo-Septiembre.")
+    else:
+        st.error("No se pudieron leer los datos. Revisa que los archivos tengan columnas Fecha, Precio y Ocupación.")
