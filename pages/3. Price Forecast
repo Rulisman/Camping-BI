@@ -1,0 +1,128 @@
+import pandas as pd
+import glob
+import os
+from datetime import datetime, timedelta
+
+def cargar_datos_historicos(ruta_carpeta):
+    """
+    Carga todos los archivos .xlsx de una carpeta y los combina.
+    Asume que los Excel tienen columnas: 'Fecha', 'Precio', 'Ocupacion'
+    (Ocupacion debe estar en formato decimal, ej: 0.85 para 85%)
+    """
+    archivos = glob.glob(os.path.join(ruta_carpeta, "*.xlsx"))
+    lista_dfs = []
+    
+    print(f"Cargando {len(archivos)} archivos históricos...")
+    
+    for archivo in archivos:
+        try:
+            df = pd.read_excel(archivo)
+            # Estandarizamos nombres de columnas para evitar errores
+            df.columns = [c.strip().capitalize() for c in df.columns]
+            lista_dfs.append(df)
+        except Exception as e:
+            print(f"Error leyendo {archivo}: {e}")
+            
+    if not lista_dfs:
+        return None
+        
+    df_total = pd.concat(lista_dfs, ignore_index=True)
+    df_total['Fecha'] = pd.to_datetime(df_total['Fecha'])
+    return df_total
+
+def logica_revenue_manager(precio_base, ocupacion_historica):
+    """
+    Aplica reglas heurísticas para definir el nuevo precio
+    basado en el comportamiento histórico.
+    """
+    nuevo_precio = precio_base
+    accion = "Mantener"
+    
+    # Lógica de precios dinámica (Yield Management)
+    if ocupacion_historica >= 0.90:
+        # Demanda muy alta: Subir precio agresivamente para capturar mayor ADR
+        nuevo_precio = precio_base * 1.15 
+        accion = "Subida Agresiva (+15%)"
+    elif 0.75 <= ocupacion_historica < 0.90:
+        # Demanda saludable: Subida moderada
+        nuevo_precio = precio_base * 1.08
+        accion = "Subida Moderada (+8%)"
+    elif 0.50 <= ocupacion_historica < 0.75:
+        # Demanda normal: Ajuste por inflación/IPC (aprox 3%)
+        nuevo_precio = precio_base * 1.03
+        accion = "Ajuste IPC (+3%)"
+    elif ocupacion_historica < 0.50:
+        # Demanda baja: Estrategia de volumen (bajar precio ligeramente)
+        # Pero establecemos un suelo (nunca bajar más del 5%)
+        nuevo_precio = precio_base * 0.95
+        accion = "Bajada Estimulo (-5%)"
+        
+    return round(nuevo_precio, 2), accion
+
+def generar_proyeccion_2026(df_historico):
+    print("Analizando patrones y generando proyección para 2026...")
+    
+    # Crear columna auxiliar Mes-Dia para comparar años distintos
+    df_historico['MesDia'] = df_historico['Fecha'].dt.strftime('%m-%d')
+    
+    # Calcular promedios históricos por día calendario
+    # Esto nos dice: "¿Qué pasa normalmente el 15 de agosto?"
+    stats_diarios = df_historico.groupby('MesDia').agg({
+        'Precio': 'mean',
+        'Ocupacion': 'mean'
+    }).reset_index()
+    
+    # Definir rango de fechas 2026 (15 mayo - 13 septiembre)
+    inicio = datetime(2026, 5, 15)
+    fin = datetime(2026, 9, 13)
+    dias_totales = (fin - inicio).days + 1
+    
+    proyeccion = []
+    
+    for i in range(dias_totales):
+        fecha_actual = inicio + timedelta(days=i)
+        mes_dia_actual = fecha_actual.strftime('%m-%d')
+        
+        # Buscar datos históricos para este día
+        datos_dia = stats_diarios[stats_diarios['MesDia'] == mes_dia_actual]
+        
+        if not datos_dia.empty:
+            adr_historico = datos_dia.iloc[0]['Precio']
+            occ_historica = datos_dia.iloc[0]['Ocupacion']
+            
+            # Aplicar el cerebro del Revenue Manager
+            precio_optimo, accion = logica_revenue_manager(adr_historico, occ_historica)
+            
+            proyeccion.append({
+                'Fecha 2026': fecha_actual.strftime('%Y-%m-%d'),
+                'Día Semana': fecha_actual.strftime('%A'),
+                'ADR Histórico Promedio': round(adr_historico, 2),
+                'Ocupación Histórica %': round(occ_historica * 100, 1),
+                'Precio Recomendado 2026': precio_optimo,
+                'Estrategia Aplicada': accion
+            })
+    
+    return pd.DataFrame(proyeccion)
+
+# --- EJECUCIÓN PRINCIPAL ---
+
+# 1. Crear carpeta 'datos' si no existe y pedir al usuario que ponga los archivos
+if not os.path.exists('datos'):
+    os.makedirs('datos')
+    print("IMPORTANTE: He creado una carpeta llamada 'datos'.")
+    print("Por favor, coloca tus archivos Excel históricos dentro de ella y vuelve a ejecutar el script.")
+else:
+    # 2. Cargar datos
+    df_historia = cargar_datos_historicos('datos')
+    
+    if df_historia is not None:
+        # 3. Generar proyección
+        df_final = generar_proyeccion_2026(df_historia)
+        
+        # 4. Guardar resultado
+        nombre_salida = 'Estrategia_Precios_2026.xlsx'
+        df_final.to_excel(nombre_salida, index=False)
+        print(f"\n¡Éxito! Se ha generado el archivo '{nombre_salida}' con los precios optimizados.")
+        print(df_final.head()) # Muestra las primeras 5 filas
+    else:
+        print("No se encontraron archivos .xlsx en la carpeta 'datos'.")
