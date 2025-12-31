@@ -9,7 +9,7 @@ st.set_page_config(page_title="Forecasting 2026", layout="wide")
 st.title("🏨 Revenue Manager AI - Estrategia 2026 (Ponderada)")
 st.markdown("""
 Esta herramienta genera precios para la temporada 2026. 
-**Mejora Inteligente:** Aplica mayor peso a los años recientes (2025/2024) para que la proyección sea más realista.
+**Mejora Inteligente:** Aplica mayor peso a los años recientes (2025/2024) para una proyección más realista.
 """)
 
 # --- BARRA LATERAL (CONFIGURACIÓN) ---
@@ -89,7 +89,6 @@ def calcular_estadisticas_ponderadas(df_total):
     # 1. Identificar años y asignar pesos
     years = sorted(df_total['Year'].unique())
     # Fórmula de peso: Posición en la lista (1, 2, 3...)
-    # El año más antiguo tendrá peso 1, el más nuevo tendrá peso N
     weights = {year: i + 1 for i, year in enumerate(years)}
     
     # Mostrar los pesos usados al usuario
@@ -109,7 +108,6 @@ def calcular_estadisticas_ponderadas(df_total):
     df_total['Ocupacion_Ponderada'] = df_total['Ocupacion'] * df_total['Peso']
 
     # 3. Agrupar por día del año y hacer la media ponderada
-    # Fórmula: Suma(Valor * Peso) / Suma(Pesos)
     stats = df_total.groupby('MesDia').agg({
         'Precio_Ponderado': 'sum',
         'Ocupacion_Ponderada': 'sum',
@@ -132,9 +130,18 @@ def aplicar_yield_management(precio_base, ocupacion):
     else:
         return precio_base * 0.95, "🔻 Bajada Estímulo"
 
+# Función para colorear la tabla
+def color_estrategia(val):
+    color = 'black'
+    if 'Subida' in val:
+        color = 'green'
+    elif 'Bajada' in val:
+        color = 'red'
+    return f'color: {color}; font-weight: bold'
+
 # --- INTERFAZ ---
 
-uploaded_file = st.file_uploader("Sube tu Excel Histórico", type=['xlsx'])
+uploaded_file = st.file_uploader("Sube tu Excel Histórico (con múltiples pestañas)", type=['xlsx'])
 
 if uploaded_file:
     st.divider()
@@ -166,34 +173,56 @@ if uploaded_file:
                 precio_rec, estrategia = aplicar_yield_management(adr, occ)
                 
                 proyeccion.append({
-                    'Fecha': fecha,
+                    'Fecha': fecha.strftime('%Y-%m-%d'), # Formato limpio
                     'Día': fecha.strftime('%A'),
-                    'ADR Histórico (Base)': round(adr, 2),
-                    'Ocupación Histórica (%)': round(occ * 100, 1),
-                    'Precio 2026': round(precio_rec, 2),
+                    'ADR Histórico': adr,
+                    'Ocupación Histórica': occ * 100,
+                    'Precio 2026': precio_rec,
                     'Estrategia': estrategia
                 })
         
         if proyeccion:
             df_final = pd.DataFrame(proyeccion)
             
-            # Métricas
+            # KPIs Métricas
             c1, c2, c3 = st.columns(3)
             c1.metric("Días Proyectados", len(df_final))
             c2.metric("ADR Medio 2026", f"{df_final['Precio 2026'].mean():.2f}€")
-            delta = df_final['Precio 2026'].mean() - df_final['ADR Histórico (Base)'].mean()
+            delta = df_final['Precio 2026'].mean() - df_final['ADR Histórico'].mean()
             c3.metric("Variación vs Base", f"{delta:.2f}€", delta_color="normal")
             
             # Gráfico
             st.subheader(f"Comparativa: Histórico ({metodo_calculo}) vs Estrategia 2026")
-            chart_data = df_final[['Fecha', 'ADR Histórico (Base)', 'Precio 2026']].set_index('Fecha')
+            chart_data = df_final[['Fecha', 'ADR Histórico', 'Precio 2026']].set_index('Fecha')
             st.line_chart(chart_data, color=["#A9A9A9", "#00FF00"])
+            
+            st.divider()
+            
+            # --- TABLA DETALLADA (La que te gustaba) ---
+            st.subheader("📋 Listado de Precios Diario")
+            st.write("Revisa aquí día a día la propuesta de precios y la razón del cambio.")
+            
+            # Aplicamos estilo a la tabla: Formato moneda, porcentaje y colores en estrategia
+            st.dataframe(
+                df_final.style.format({
+                    'ADR Histórico': '{:.2f}€',
+                    'Ocupación Histórica': '{:.1f}%',
+                    'Precio 2026': '{:.2f}€'
+                }).applymap(color_estrategia, subset=['Estrategia']),
+                use_container_width=True,
+                height=500 # Altura fija para que sea cómodo hacer scroll
+            )
             
             # Descarga
             buffer = io.BytesIO()
             with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
                 df_final.to_excel(writer, index=False, sheet_name='Precios 2026')
             
-            st.download_button("📥 Descargar Estrategia (.xlsx)", buffer, "Precios_2026_Smart.xlsx")
+            st.download_button(
+                label="📥 Descargar Estrategia Completa (.xlsx)",
+                data=buffer,
+                file_name="Estrategia_Precios_2026_Smart.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
         else:
             st.warning("No hay datos coincidentes de fechas.")
