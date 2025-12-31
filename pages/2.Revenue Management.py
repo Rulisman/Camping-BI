@@ -90,61 +90,80 @@ if uploaded_file is not None:
         st.info("No hay cambios de reservas respecto a la última carga.")
 
     # 4. GRÁFICAS CON PLOTLY
-    st.subheader("📈 Gráficas de Evolución")
-    
-    # --- GRÁFICA 1: Porcentaje de Ocupación ---
-    fig_occ = go.Figure()
-
-    for tipo in tipos_alojamiento:
-        fig_occ.add_trace(go.Scatter(
-            x=df_ocupacion['fecha'],
-            y=df_ocupacion[f'%_{tipo}'],
-            mode='lines+markers',
-            name=tipo,
-            hovertemplate='%{y:.1f}%<extra></extra>' # Formato bonito al pasar el ratón
-        ))
-
-    fig_occ.update_layout(
-        title="Porcentaje de Ocupación por Fecha",
-        yaxis_title="% Ocupado",
-        yaxis_range=[0, 105], # Fija el eje Y hasta 100% (con margen)
-        hovermode="x unified", # Muestra todas las series al pasar el ratón por una fecha
-        template="plotly_white"
-    )
-    
-    st.plotly_chart(fig_occ, use_container_width=True)
-
-    # --- GRÁFICA 2: Pick Up (Si existe) ---
-    if df_merge is not None:
-        fig_pickup = go.Figure()
-        hay_datos_pickup = False
-
-        for tipo in tipos_alojamiento:
-            # Solo añadimos al gráfico si hay movimiento
-            if df_merge[f'PickUp_{tipo}'].sum() != 0:
-                fig_pickup.add_trace(go.Bar(
-                    x=df_merge['fecha'],
-                    y=df_merge[f'PickUp_{tipo}'],
-                    name=tipo
-                ))
-                hay_datos_pickup = True
+        st.subheader("📈 Gráficas de Evolución")
         
-        if hay_datos_pickup:
-            fig_pickup.update_layout(
-                title="Pick Up (Nuevas Reservas vs Semana Anterior)",
-                yaxis_title="Noches Variación",
-                barmode='group', # Barras agrupadas (pon 'relative' si prefieres apiladas)
-                template="plotly_white"
-            )
-            # Añadir línea cero
-            fig_pickup.add_hline(y=0, line_width=1, line_color="black")
-            
-            st.plotly_chart(fig_pickup, use_container_width=True)
+        # --- FILTRO INTERACTIVO ---
+        # Creamos un selector múltiple para que elijas qué tipos ver
+        tipos_seleccionados = st.multiselect(
+            "Selecciona los tipos de alojamiento a visualizar:",
+            options=tipos_alojamiento,
+            default=tipos_alojamiento # Por defecto salen todos, pero puedes quitar los que sobren
+        )
+        
+        if not tipos_seleccionados:
+            st.warning("⚠️ Por favor, selecciona al menos un tipo de alojamiento para ver la gráfica.")
         else:
-            st.info("No hay variaciones visuales que mostrar.")
+            # --- GRÁFICA 1: Porcentaje de Ocupación ---
+            fig_occ = go.Figure()
+
+            # Solo iteramos sobre lo que el usuario ha seleccionado en el filtro
+            for tipo in tipos_seleccionados:
+                fig_occ.add_trace(go.Scatter(
+                    x=df_ocupacion['fecha'],
+                    y=df_ocupacion[f'%_{tipo}'],
+                    mode='lines+markers',
+                    name=tipo,
+                    hovertemplate='%{y:.1f}%<extra></extra>' 
+                ))
+
+            fig_occ.update_layout(
+                title="Porcentaje de Ocupación por Fecha",
+                yaxis_title="% Ocupado",
+                yaxis_range=[0, 105],
+                hovermode="x unified",
+                template="plotly_white",
+                legend=dict(
+                    orientation="h", # Leyenda horizontal para ahorrar espacio vertical
+                    yanchor="bottom",
+                    y=1.02,
+                    xanchor="right",
+                    x=1
+                )
+            )
             
-    else:
-        st.write("Carga un segundo archivo la próxima semana para ver la gráfica de Pick Up.")
+            st.plotly_chart(fig_occ, use_container_width=True)
+
+            # --- GRÁFICA 2: Pick Up (Si existe) ---
+            if df_merge is not None:
+                fig_pickup = go.Figure()
+                hay_datos_pickup = False
+
+                for tipo in tipos_seleccionados:
+                    # Usamos también el filtro aquí para que coincidan las dos gráficas
+                    if df_merge[f'PickUp_{tipo}'].sum() != 0:
+                        fig_pickup.add_trace(go.Bar(
+                            x=df_merge['fecha'],
+                            y=df_merge[f'PickUp_{tipo}'],
+                            name=tipo
+                        ))
+                        hay_datos_pickup = True
+                
+                if hay_datos_pickup:
+                    fig_pickup.update_layout(
+                        title="Pick Up (Nuevas Reservas vs Semana Anterior)",
+                        yaxis_title="Noches Variación",
+                        barmode='group', 
+                        template="plotly_white",
+                        legend=dict(orientation="h", y=1.02, x=1)
+                    )
+                    fig_pickup.add_hline(y=0, line_width=1, line_color="black")
+                    
+                    st.plotly_chart(fig_pickup, use_container_width=True)
+                else:
+                    st.info("No hay variaciones visuales (Pick Up) para los tipos seleccionados.")
+                    
+            else:
+                st.write("Carga un segundo archivo la próxima semana para ver la gráfica de Pick Up.")
 
     # 5. GUARDAR EN HISTORIAL
     st.divider()
