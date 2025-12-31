@@ -15,11 +15,11 @@ if not os.path.exists(CARPETA_HISTORIAL):
 
 # Ajusta tu inventario aquí (Capacidad total por tipo)
 INVENTARIO_TOTAL = {
-    'N-4': 20, 
+    'N-4': 30, 
     'N-6': 10,
-    'ST2': 15,
-    'ST4': 10,
-    'ST5': 10
+    'ST2': 2,
+    'ST4': 5,
+    'ST5': 5
 }
 
 # --- INICIO DE LA PÁGINA ---
