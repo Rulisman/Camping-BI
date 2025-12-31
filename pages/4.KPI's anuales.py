@@ -13,7 +13,7 @@ uploaded_file = st.file_uploader("Sube tu archivo Excel", type=["xlsx"])
 
 if uploaded_file is not None:
     try:
-        years_to_load = [2023, 2024, 2025]
+        years_to_load = [2022, 2023, 2024, 2025]
         # Leemos todas las pestañas
         sheets = {year: pd.read_excel(uploaded_file, sheet_name=str(year)) for year in years_to_load}
         
