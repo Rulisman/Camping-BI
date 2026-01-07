@@ -27,14 +27,28 @@ INVENTARIO_TOTAL = {
 
 def extraer_fecha_filename(filename):
     """
-    Intenta extraer la fecha del nombre del archivo formato 'backup_YYYY-MM-DD_HH-MM-SS.xlsx'
+    Busca una fecha en formato YYYY-MM-DD en cualquier parte del nombre del archivo.
+    Si no la encuentra, usa la fecha de modificación del archivo.
     """
     basename = os.path.basename(filename)
-    match = re.search(r'backup_(\d{4}-\d{2}-\d{2})', basename)
-    if match:
-        return pd.to_datetime(match.group(1))
-    # Si el archivo no tiene el formato esperado, usamos la fecha de creación del sistema
-    return pd.to_datetime(datetime.fromtimestamp(os.path.getctime(filename)).strftime('%Y-%m-%d'))
+    
+    # 1. Buscamos el patrón AAAA-MM-DD (Ej: 2025-12-31)
+    match_iso = re.search(r'(\d{4}-\d{2}-\d{2})', basename)
+    
+    if match_iso:
+        return pd.to_datetime(match_iso.group(1))
+    
+    # 2. (Opcional) Si usas formato pegado YYYYMMDD (Ej: 20251231)
+    match_compact = re.search(r'(\d{8})', basename)
+    if match_compact:
+        try:
+            return pd.to_datetime(match_compact.group(1), format='%Y%m%d')
+        except:
+            pass # Si falla (no era una fecha real), seguimos
+            
+    # 3. ÚLTIMO RECURSO: Fecha del sistema (lo que te está pasando ahora)
+    fecha_sistema = datetime.fromtimestamp(os.path.getctime(filename))
+    return pd.to_datetime(fecha_sistema.date())
 
 def cargar_todo_historial():
     """Carga todos los excels de la carpeta historial en un único DataFrame."""
