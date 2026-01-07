@@ -285,38 +285,51 @@ with tab2:
             st.write("Rango de fechas de Estancia a analizar:")
             rango_fechas = st.date_input("Selecciona inicio y fin:", [])
 
-        # --- LÓGICA DE LA CURVA ---
+    # --- LÓGICA DE LA CURVA CORREGIDA ---
         if len(rango_fechas) == 2:
             start_date, end_date = pd.to_datetime(rango_fechas[0]), pd.to_datetime(rango_fechas[1])
             
-            # A) Filtramos: Nos quedamos solo con las filas que corresponden a la estancia seleccionada
+            # 1. Filtramos por FECHA DE ESTANCIA (Cuándo viene el cliente)
             mask_estancia = (df_hist['fecha'] >= start_date) & (df_hist['fecha'] <= end_date)
             df_target = df_hist[mask_estancia].copy()
 
             if not df_target.empty:
-                # B) AGRUPAMOS POR SNAPSHOT (La clave del éxito)
-                # Sumamos las habitaciones vendidas para ese rango de estancia, agrupadas por la fecha en que se tomó el dato.
-                curva_evolucion = df_target.groupby('fecha_snapshot')[tipo_analisis].sum().reset_index()
                 
-                # Ordenamos cronológicamente por fecha de snapshot para que la línea vaya de izquierda a derecha
+                # --- A) CÁLCULO PARA LA GRÁFICA (EVOLUCIÓN) ---
+                # Agrupamos por 'fecha_snapshot' para que sume los totales INDEPENDIENTES de cada día de carga
+                curva_evolucion = df_target.groupby('fecha_snapshot')[tipo_analisis].sum().reset_index()
                 curva_evolucion = curva_evolucion.sort_values('fecha_snapshot')
+                
+                # --- B) CÁLCULO PARA EL DATO ACTUAL (KPI REAL) ---
+                # Para saber cuántas reservas hay HOY, solo miramos el último snapshot disponible
+                ultimo_snapshot = df_target['fecha_snapshot'].max()
+                df_ultimo_dia = df_target[df_target['fecha_snapshot'] == ultimo_snapshot]
+                total_real_actual = int(df_ultimo_dia[tipo_analisis].sum())
 
-                # C) Calculamos KPIs adicionales (Ocupación %)
+                # Calculamos KPIs adicionales
                 dias_rango = (end_date - start_date).days + 1
                 capacidad_total_rango = INVENTARIO_TOTAL.get(tipo_analisis, 1) * dias_rango
                 
-                curva_evolucion['% Ocupacion'] = (curva_evolucion[tipo_analisis] / capacidad_total_rango) * 100
+                # % de Ocupación actual real
+                ocupacion_real_pct = (total_real_actual / capacidad_total_rango) * 100
 
-                # D) VISUALIZACIÓN
-                st.subheader(f"Evolución de ventas para: {tipo_analisis}")
-                st.caption(f"Estancias entre {start_date.date()} y {end_date.date()}")
+                # --- VISUALIZACIÓN ---
+                st.subheader(f"Analizando: {tipo_analisis}")
+                
+                # MOSTRAR EL DATO CORRECTO (NO EL ACUMULADO)
+                col_kpi1, col_kpi2, col_kpi3 = st.columns(3)
+                col_kpi1.metric("Noches Reservadas (OTB)", f"{total_real_actual}", help="Datos tomados del último archivo cargado")
+                col_kpi2.metric("Capacidad Total Periodo", f"{capacidad_total_rango}")
+                col_kpi3.metric("% Ocupación", f"{ocupacion_real_pct:.1f}%")
 
+                st.caption(f"Evolución de reservas para estancias entre {start_date.date()} y {end_date.date()}")
+
+                # Gráfica
                 fig_curve = go.Figure()
 
-                # Línea de Ventas (Noches)
                 fig_curve.add_trace(go.Scatter(
                     x=curva_evolucion['fecha_snapshot'],
-                    y=curva_evolucion[tipo_analisis],
+                    y=curva_evolucion[tipo_analisis], # Aquí Plotly ya usa el dato agrupado correctamente
                     mode='lines+markers+text',
                     name='Noches Vendidas',
                     text=curva_evolucion[tipo_analisis],
@@ -325,18 +338,14 @@ with tab2:
                 ))
 
                 fig_curve.update_layout(
-                    xaxis_title="Fecha de Lectura (Snapshot)",
-                    yaxis_title="Total Noches Vendidas (OTB)",
+                    xaxis_title="Fecha de Toma de Datos (Snapshot)",
+                    yaxis_title="Noches Vendidas (Acumulado a esa fecha)",
                     template="plotly_white",
                     hovermode="x unified"
                 )
 
                 st.plotly_chart(fig_curve, use_container_width=True)
                 
-                # Tabla de datos crudos
-                with st.expander("Ver datos detallados de la tabla"):
-                    st.dataframe(curva_evolucion)
-            
             else:
                 st.warning("No se encontraron reservas en el historial para ese rango de fechas de estancia.")
         
