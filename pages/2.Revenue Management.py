@@ -155,6 +155,69 @@ with tab1:
             with open(ruta_destino, "wb") as f:
                 f.write(uploaded_file.read())
             st.success(f"Guardado: {nombre_archivo}")
+            
+# --- 5. GESTIÓN DE GUARDADO Y DESHACER ---
+        st.divider()
+        st.subheader("💾 Guardar datos en Historial")
+        st.write("Guarda los datos actuales para que sirvan de comparación mañana.")
+
+        # Contenedor para mensajes de estado
+        status_container = st.empty()
+
+        col_save, col_undo = st.columns([1, 1])
+
+        with col_save:
+            # Botón de Guardar
+            if st.button("Confirmar y Guardar", type="primary"):
+                fecha_hoy = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                nombre_archivo = f"backup_{fecha_hoy}.xlsx"
+                ruta_destino = os.path.join(CARPETA_HISTORIAL, nombre_archivo)
+                
+                try:
+                    uploaded_file.seek(0) # Rebobinamos el archivo por si acaso
+                    with open(ruta_destino, "wb") as f:
+                        f.write(uploaded_file.read())
+                    
+                    # Guardamos en la memoria de la sesión qué archivo acabamos de crear
+                    st.session_state['ultimo_guardado'] = nombre_archivo
+                    st.session_state['ruta_ultimo_guardado'] = ruta_destino
+                    
+                    status_container.success(f"✅ Archivo guardado: {nombre_archivo}")
+                    
+                    # Recargamos la app para que actualice las gráficas con el nuevo dato si se desea
+                    # o simplemente para actualizar el estado del botón
+                    st.rerun()
+                    
+                except Exception as e:
+                    st.error(f"Error al guardar: {e}")
+
+        with col_undo:
+            # Lógica para Deshacer (Solo aparece si acabamos de guardar algo)
+            if 'ultimo_guardado' in st.session_state and os.path.exists(st.session_state['ruta_ultimo_guardado']):
+                archivo_a_borrar = st.session_state['ultimo_guardado']
+                
+                st.warning(f"Último guardado: {archivo_a_borrar}")
+                
+                if st.button(f"🗑️ Deshacer (Borrar {archivo_a_borrar})"):
+                    try:
+                        os.remove(st.session_state['ruta_ultimo_guardado'])
+                        
+                        # Limpiamos el estado
+                        del st.session_state['ultimo_guardado']
+                        del st.session_state['ruta_ultimo_guardado']
+                        
+                        status_container.info(f"↩️ Se ha eliminado {archivo_a_borrar}. El historial ha vuelto a su estado anterior.")
+                        
+                        # Forzamos recarga para que desaparezca del historial visual
+                        st.rerun()
+                        
+                    except Exception as e:
+                        st.error(f"No se pudo borrar el archivo: {e}")
+            
+            elif 'ultimo_guardado' in st.session_state:
+                # Si el archivo ya no existe (lo borraste manual), limpiamos el estado
+                del st.session_state['ultimo_guardado']
+                st.rerun()
 
 # ---------------------------------------------------------
 # TAB 2: EVOLUCIÓN HISTÓRICA (BOOKING CURVES)
