@@ -220,67 +220,100 @@ with tab1:
                 st.rerun()
 
 # ---------------------------------------------------------
-# TAB 2: EVOLUCIÓN HISTÓRICA (BOOKING CURVES)
+# TAB 2: EVOLUCIÓN HISTÓRICA (BOOKING CURVE) CORREGIDA
 # ---------------------------------------------------------
 with tab2:
-    st.header("⏳ Curvas de Llenado (Pace)")
-    st.markdown("Analiza cómo ha evolucionado la ocupación a lo largo del tiempo.")
-    
-    if st.button("🔄 Cargar/Actualizar Base de Datos Histórica"):
-        df_full = cargar_todo_historial()
+    st.header("⏳ Booking Curve (Ritmo de Llenado)")
+    st.markdown("Selecciona un rango de estancia futura (ej. Semana Santa) y mira cómo se ha ido llenando día tras día.")
+
+    # Botón para refrescar la base de datos de archivos
+    if st.button("🔄 Recargar Base de Datos Histórica"):
+        df_full = cargar_todo_historial() # Asegúrate de tener definida esta función arriba
         st.session_state['df_full'] = df_full
-        st.success(f"Cargados {len(df_full)} registros históricos.")
-    
+        st.success(f"Base de datos actualizada. Se han encontrado {df_full['fecha_snapshot'].nunique()} archivos/snapshots diferentes.")
+
+    # Verificamos si hay datos cargados
     if 'df_full' in st.session_state and not st.session_state['df_full'].empty:
         df_hist = st.session_state['df_full']
         
-        # Filtros
+        # --- DEBUG (Opcional, para que veas si está leyendo bien las fechas) ---
+        with st.expander("Ver fechas de archivos detectadas (Snapshots)"):
+            fechas_detectadas = df_hist['fecha_snapshot'].unique()
+            fechas_detectadas_str = [pd.to_datetime(f).strftime('%Y-%m-%d') for f in fechas_detectadas]
+            st.write("El sistema tiene datos de los siguientes días de carga:", fechas_detectadas_str)
+            if len(fechas_detectadas) < 2:
+                st.warning("⚠️ ¡Atención! Solo hay 1 fecha de snapshot. Necesitas guardar archivos en días diferentes para ver una curva.")
+
+        # --- FILTROS ---
         col_f1, col_f2 = st.columns(2)
         with col_f1:
-            tipo_analisis = st.selectbox("Selecciona Alojamiento:", list(INVENTARIO_TOTAL.keys()))
-        with col_f2:
-            # Filtramos fechas futuras o pasadas
-            rango_fechas = st.date_input("Rango de fechas de estancia a analizar:", [])
+            # Elegimos qué alojamiento analizar
+            tipo_analisis = st.selectbox("Tipo de Alojamiento:", list(INVENTARIO_TOTAL.keys()))
         
+        with col_f2:
+            # Elegimos el rango de fechas DE ESTANCIA (ej. Agosto)
+            st.write("Rango de fechas de Estancia a analizar:")
+            rango_fechas = st.date_input("Selecciona inicio y fin:", [])
+
+        # --- LÓGICA DE LA CURVA ---
         if len(rango_fechas) == 2:
             start_date, end_date = pd.to_datetime(rango_fechas[0]), pd.to_datetime(rango_fechas[1])
             
-            # Filtramos el dataframe por el rango de fechas de ESTANCIA
-            mask = (df_hist['fecha'] >= start_date) & (df_hist['fecha'] <= end_date)
-            df_filtered = df_hist[mask].copy()
+            # 1. Filtramos: Nos quedamos solo con las filas que corresponden a la estancia seleccionada
+            mask_estancia = (df_hist['fecha'] >= start_date) & (df_hist['fecha'] <= end_date)
+            df_target = df_hist[mask_estancia].copy()
 
-            if not df_filtered.empty:
-                # Agrupamos por fecha de snapshot para ver cuántas reservas teníamos en cada momento
-                # Sumamos la columna del tipo seleccionado
-                evolucion = df_filtered.groupby('fecha_snapshot')[tipo_analisis].sum().reset_index()
+            if not df_target.empty:
+                # 2. AGRUPAMOS POR SNAPSHOT (La clave del éxito)
+                # Sumamos las habitaciones vendidas para ese rango de estancia, agrupadas por la fecha en que se tomó el dato.
+                # Esto responde: "¿Cuántas reservas para Agosto teníamos el día 1? ¿Y el día 2? ¿Y el día 3?"
                 
-                # Calculamos % ocupación sobre la capacidad total del rango seleccionado
+                curva_evolucion = df_target.groupby('fecha_snapshot')[tipo_analisis].sum().reset_index()
+                
+                # Ordenamos cronológicamente por fecha de snapshot para que la línea vaya de izquierda a derecha
+                curva_evolucion = curva_evolucion.sort_values('fecha_snapshot')
+
+                # 3. Calculamos KPIs adicionales (Ocupación %)
                 dias_rango = (end_date - start_date).days + 1
-                capacidad_total_periodo = INVENTARIO_TOTAL[tipo_analisis] * dias_rango
+                capacidad_total_rango = INVENTARIO_TOTAL.get(tipo_analisis, 1) * dias_rango
                 
-                evolucion['Ocupacion %'] = (evolucion[tipo_analisis] / capacidad_total_periodo) * 100
-                
-                # Gráfica de línea
-                fig_hist = go.Figure()
-                fig_hist.add_trace(go.Scatter(
-                    x=evolucion['fecha_snapshot'],
-                    y=evolucion['Ocupacion %'],
-                    mode='lines+markers',
-                    name=f'Ocupación {tipo_analisis}'
+                curva_evolucion['% Ocupacion'] = (curva_evolucion[tipo_analisis] / capacidad_total_rango) * 100
+
+                # --- VISUALIZACIÓN ---
+                st.subheader(f"Evolución de ventas para: {tipo_analisis}")
+                st.caption(f"Estancias entre {start_date.date()} y {end_date.date()}")
+
+                fig_curve = go.Figure()
+
+                # Línea de Ocupación
+                fig_curve.add_trace(go.Scatter(
+                    x=curva_evolucion['fecha_snapshot'],
+                    y=curva_evolucion[tipo_analisis],
+                    mode='lines+markers+text',
+                    name='Noches Vendidas',
+                    text=curva_evolucion[tipo_analisis],
+                    textposition="top center",
+                    line=dict(color='firebrick', width=3)
                 ))
-                
-                fig_hist.update_layout(
-                    title=f"Evolución de ventas para estancias entre {start_date.date()} y {end_date.date()}",
-                    xaxis_title="Fecha de Lectura (Cuándo miramos)",
-                    yaxis_title="% Ocupación Acumulada"
+
+                fig_curve.update_layout(
+                    xaxis_title="Fecha de Lectura (¿Cuándo miramos el dato?)",
+                    yaxis_title="Total Noches Vendidas (OTB)",
+                    template="plotly_white",
+                    hovermode="x unified"
                 )
-                st.plotly_chart(fig_hist, use_container_width=True)
+
+                st.plotly_chart(fig_curve, use_container_width=True)
                 
-                st.write("Datos de la gráfica:", evolucion)
-                
+                # Tabla de datos crudos
+                with st.expander("Ver datos de la tabla"):
+                    st.dataframe(curva_evolucion)
+            
             else:
-                st.warning("No hay datos en el historial para ese rango de fechas.")
+                st.warning("No se encontraron reservas en el historial para ese rango de fechas de estancia.")
+        
         else:
-            st.info("Selecciona un rango de fechas (Inicio y Fin) para ver la curva.")
+            st.info("👆 Selecciona una fecha de inicio y fin en el calendario para generar la curva.")
+
     else:
-        st.info("Pulsa el botón de cargar historial para analizar las tendencias.")
+        st.info("Pulsa 'Recargar Base de Datos' para comenzar el análisis.")
