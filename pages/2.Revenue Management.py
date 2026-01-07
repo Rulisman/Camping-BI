@@ -25,47 +25,54 @@ INVENTARIO_TOTAL = {
 
 # --- FUNCIONES AUXILIARES ---
 
+# --- FUNCIONES AUXILIARES (PÉGALO AL PRINCIPIO DEL SCRIPT) ---
 def extraer_fecha_filename(filename):
     """
-    Busca una fecha en formato YYYY-MM-DD en cualquier parte del nombre del archivo.
-    Si no la encuentra, usa la fecha de modificación del archivo.
+    Versión mejorada: Busca cualquier fecha tipo YYYY-MM-DD en el nombre.
     """
     basename = os.path.basename(filename)
     
     # 1. Buscamos el patrón AAAA-MM-DD (Ej: 2025-12-31)
+    # Esto encontrará la fecha aunque el archivo se llame "datos_2025-12-31.xlsx" o solo "2025-12-31.xlsx"
     match_iso = re.search(r'(\d{4}-\d{2}-\d{2})', basename)
     
     if match_iso:
         return pd.to_datetime(match_iso.group(1))
     
-    # 2. (Opcional) Si usas formato pegado YYYYMMDD (Ej: 20251231)
-    match_compact = re.search(r'(\d{8})', basename)
-    if match_compact:
-        try:
-            return pd.to_datetime(match_compact.group(1), format='%Y%m%d')
-        except:
-            pass # Si falla (no era una fecha real), seguimos
-            
-    # 3. ÚLTIMO RECURSO: Fecha del sistema (lo que te está pasando ahora)
+    # 2. Si falla lo anterior, usamos la fecha del sistema (pero te avisamos en la consola)
     fecha_sistema = datetime.fromtimestamp(os.path.getctime(filename))
+    print(f"⚠️ AVISO: No se detectó fecha en el nombre de '{basename}'. Usando fecha sistema: {fecha_sistema}")
     return pd.to_datetime(fecha_sistema.date())
 
 def cargar_todo_historial():
-    """Carga todos los excels de la carpeta historial en un único DataFrame."""
+    """Carga todos los excels de la carpeta historial."""
+    # Forzamos la búsqueda de cualquier Excel
     archivos = glob.glob(os.path.join(CARPETA_HISTORIAL, "*.xlsx"))
     lista_dfs = []
+    
+    # Ordenamos archivos para procesarlos en orden
+    archivos.sort()
+
+    print(f"📂 Archivos encontrados en historial: {len(archivos)}")
     
     for f in archivos:
         try:
             temp = pd.read_excel(f)
-            # Normalizamos fecha
+            # Validamos que tenga la columna fecha (estancia)
             if 'fecha' in temp.columns:
                 temp['fecha'] = pd.to_datetime(temp['fecha'])
-                # Añadimos la fecha de captura (Snapshot Date)
-                temp['fecha_snapshot'] = extraer_fecha_filename(f)
+                
+                # AQUÍ ESTÁ LA CLAVE: Usamos la nueva función de extracción
+                fecha_detectada = extraer_fecha_filename(f)
+                temp['fecha_snapshot'] = fecha_detectada
+                
                 lista_dfs.append(temp)
+                print(f"   ✅ Cargado: {os.path.basename(f)} -> Fecha asignada: {fecha_detectada.date()}")
+            else:
+                print(f"   ❌ Omitido {os.path.basename(f)}: No tiene columna 'fecha'")
+
         except Exception as e:
-            print(f"Error cargando {f}: {e}")
+            print(f"   ❌ Error cargando {f}: {e}")
             
     if lista_dfs:
         return pd.concat(lista_dfs, ignore_index=True)
