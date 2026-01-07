@@ -234,30 +234,39 @@ with tab1:
                 st.rerun()
 
 # ---------------------------------------------------------
-# TAB 2: EVOLUCIÓN HISTÓRICA (BOOKING CURVE) CORREGIDA
+# TAB 2: EVOLUCIÓN HISTÓRICA (BOOKING CURVE) - FINAL
 # ---------------------------------------------------------
 with tab2:
     st.header("⏳ Booking Curve (Ritmo de Llenado)")
     st.markdown("Selecciona un rango de estancia futura (ej. Semana Santa) y mira cómo se ha ido llenando día tras día.")
 
-    # Botón para refrescar la base de datos de archivos
+    # 1. BOTÓN DE CARGA Y AUDITORÍA
     if st.button("🔄 Recargar Base de Datos Histórica"):
-        df_full = cargar_todo_historial() # Asegúrate de tener definida esta función arriba
+        # Llamamos a la función global que debe tener la lógica regex actualizada
+        df_full = cargar_todo_historial() 
         st.session_state['df_full'] = df_full
-        st.success(f"Base de datos actualizada. Se han encontrado {df_full['fecha_snapshot'].nunique()} archivos/snapshots diferentes.")
+        
+        # --- BLOQUE DE AUDITORÍA (Visualización de fechas detectadas) ---
+        if not df_full.empty and 'fecha_snapshot' in df_full.columns:
+            fechas_detectadas = df_full['fecha_snapshot'].unique()
+            # Las ordenamos y convertimos a texto para leerlas fácil
+            fechas_legibles = sorted([pd.to_datetime(f).strftime('%Y-%m-%d') for f in fechas_detectadas])
+            
+            st.success(f"✅ Base de datos actualizada. Se han procesado {len(fechas_detectadas)} archivos.")
+            
+            with st.expander("🕵️ Ver fechas de historial detectadas (Auditoría)", expanded=True):
+                st.write("El sistema ha encontrado datos de estos días (Eje X de tu gráfica):")
+                st.write(fechas_legibles)
+                
+                if len(fechas_detectadas) < 2:
+                    st.warning("⚠️ ¡Atención! Solo veo 1 fecha única. Recuerda renombrar tus archivos viejos a '2025-12-31.xlsx' para que aparezca la evolución.")
+        else:
+            st.error("❌ No se han encontrado datos o ha fallado la carga.")
 
-    # Verificamos si hay datos cargados
+    # 2. VISUALIZACIÓN Y FILTROS
     if 'df_full' in st.session_state and not st.session_state['df_full'].empty:
         df_hist = st.session_state['df_full']
         
-        # --- DEBUG (Opcional, para que veas si está leyendo bien las fechas) ---
-        with st.expander("Ver fechas de archivos detectadas (Snapshots)"):
-            fechas_detectadas = df_hist['fecha_snapshot'].unique()
-            fechas_detectadas_str = [pd.to_datetime(f).strftime('%Y-%m-%d') for f in fechas_detectadas]
-            st.write("El sistema tiene datos de los siguientes días de carga:", fechas_detectadas_str)
-            if len(fechas_detectadas) < 2:
-                st.warning("⚠️ ¡Atención! Solo hay 1 fecha de snapshot. Necesitas guardar archivos en días diferentes para ver una curva.")
-
         # --- FILTROS ---
         col_f1, col_f2 = st.columns(2)
         with col_f1:
@@ -273,33 +282,31 @@ with tab2:
         if len(rango_fechas) == 2:
             start_date, end_date = pd.to_datetime(rango_fechas[0]), pd.to_datetime(rango_fechas[1])
             
-            # 1. Filtramos: Nos quedamos solo con las filas que corresponden a la estancia seleccionada
+            # A) Filtramos: Nos quedamos solo con las filas que corresponden a la estancia seleccionada
             mask_estancia = (df_hist['fecha'] >= start_date) & (df_hist['fecha'] <= end_date)
             df_target = df_hist[mask_estancia].copy()
 
             if not df_target.empty:
-                # 2. AGRUPAMOS POR SNAPSHOT (La clave del éxito)
+                # B) AGRUPAMOS POR SNAPSHOT (La clave del éxito)
                 # Sumamos las habitaciones vendidas para ese rango de estancia, agrupadas por la fecha en que se tomó el dato.
-                # Esto responde: "¿Cuántas reservas para Agosto teníamos el día 1? ¿Y el día 2? ¿Y el día 3?"
-                
                 curva_evolucion = df_target.groupby('fecha_snapshot')[tipo_analisis].sum().reset_index()
                 
                 # Ordenamos cronológicamente por fecha de snapshot para que la línea vaya de izquierda a derecha
                 curva_evolucion = curva_evolucion.sort_values('fecha_snapshot')
 
-                # 3. Calculamos KPIs adicionales (Ocupación %)
+                # C) Calculamos KPIs adicionales (Ocupación %)
                 dias_rango = (end_date - start_date).days + 1
                 capacidad_total_rango = INVENTARIO_TOTAL.get(tipo_analisis, 1) * dias_rango
                 
                 curva_evolucion['% Ocupacion'] = (curva_evolucion[tipo_analisis] / capacidad_total_rango) * 100
 
-                # --- VISUALIZACIÓN ---
+                # D) VISUALIZACIÓN
                 st.subheader(f"Evolución de ventas para: {tipo_analisis}")
                 st.caption(f"Estancias entre {start_date.date()} y {end_date.date()}")
 
                 fig_curve = go.Figure()
 
-                # Línea de Ocupación
+                # Línea de Ventas (Noches)
                 fig_curve.add_trace(go.Scatter(
                     x=curva_evolucion['fecha_snapshot'],
                     y=curva_evolucion[tipo_analisis],
@@ -307,11 +314,11 @@ with tab2:
                     name='Noches Vendidas',
                     text=curva_evolucion[tipo_analisis],
                     textposition="top center",
-                    line=dict(color='firebrick', width=3)
+                    line=dict(color='royalblue', width=3)
                 ))
 
                 fig_curve.update_layout(
-                    xaxis_title="Fecha de Lectura (¿Cuándo miramos el dato?)",
+                    xaxis_title="Fecha de Lectura (Snapshot)",
                     yaxis_title="Total Noches Vendidas (OTB)",
                     template="plotly_white",
                     hovermode="x unified"
@@ -320,7 +327,7 @@ with tab2:
                 st.plotly_chart(fig_curve, use_container_width=True)
                 
                 # Tabla de datos crudos
-                with st.expander("Ver datos de la tabla"):
+                with st.expander("Ver datos detallados de la tabla"):
                     st.dataframe(curva_evolucion)
             
             else:
