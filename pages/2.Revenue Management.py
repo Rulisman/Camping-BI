@@ -24,17 +24,24 @@ HOJA_DB = "Datos"  # Asegúrate de que coincida con tu Google Sheet
 
 def cargar_datos_gsheet():
     """Descarga toda la base de datos desde Google Sheets."""
-    # Usamos la conexión nativa de Streamlit, ttl=0 para que no cachee datos viejos
     conn = st.connection("gsheets", type=GSheetsConnection)
     try:
         df = conn.read(worksheet=HOJA_DB)
-        # Aseguramos formato de fechas
+        
+        # --- CORRECCIÓN FECHAS EUROPEAS ---
         if not df.empty and 'fecha_estancia' in df.columns:
-            df['fecha_estancia'] = pd.to_datetime(df['fecha_estancia'])
-            df['fecha_snapshot'] = pd.to_datetime(df['fecha_snapshot'])
+            # dayfirst=True le dice: "El primer número es el día, no el mes"
+            # errors='coerce' le dice: "Si hay una fecha basura, no explotes, ponla vacía (NaT)"
+            df['fecha_estancia'] = pd.to_datetime(df['fecha_estancia'], dayfirst=True, errors='coerce')
+            df['fecha_snapshot'] = pd.to_datetime(df['fecha_snapshot'], dayfirst=True, errors='coerce')
+            
+            # Limpiamos filas que hayan quedado con fechas vacías por error
+            df = df.dropna(subset=['fecha_estancia', 'fecha_snapshot'])
+            
         return df
     except Exception as e:
-        st.error(f"Error conectando con Google Sheets: {e}")
+        # Este print saldrá en la consola negra de Manage App si hay error
+        print(f"Error detalle: {e}") 
         return pd.DataFrame()
 
 def guardar_en_gsheet(df_nuevo, fecha_snapshot):
