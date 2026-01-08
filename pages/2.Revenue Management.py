@@ -115,7 +115,7 @@ st.title("⛺ Revenue Management System 3.0")
 tab1, tab2 = st.tabs(["📥 Importar & Analizar Pick Up", "📈 Booking Curve (Tendencia)"])
 
 # ---------------------------------------------------------
-# TAB 1: IMPORTADOR + PICK UP (FUNCIONALIDAD RECUPERADA)
+# TAB 1: IMPORTADOR + PICK UP (CORREGIDO)
 # ---------------------------------------------------------
 with tab1:
     st.markdown("### 1. Análisis de Pick Up (Subida de Archivos)")
@@ -138,9 +138,14 @@ with tab1:
             st.error(f"Error leyendo archivo: {e}")
             st.stop()
 
-        # Transformamos el actual a formato largo para poder comparar fácil
+        # Transformamos el actual a formato largo
         tipos_disponibles = [c for c in INVENTARIO_TOTAL.keys() if c in df_actual_wide.columns]
         df_actual = df_actual_wide.melt(id_vars=['fecha'], value_vars=tipos_disponibles, var_name='tipo_alojamiento', value_name='cantidad')
+        
+        # --- CORRECCIÓN CLAVE AQUÍ ---
+        # Renombramos 'fecha' a 'fecha_estancia' para que coincida con la base de datos
+        df_actual.rename(columns={'fecha': 'fecha_estancia'}, inplace=True)
+        # -----------------------------
 
         # B) BUSCAR EL ANTERIOR EN LA DB
         df_anterior, fecha_anterior = obtener_ultimo_snapshot_db()
@@ -152,22 +157,17 @@ with tab1:
             st.subheader(f"📊 Informe de Pick Up")
             st.caption(f"Comparando archivo actual (**{fecha_sugerida.date()}**) vs Base de Datos (**{fecha_anterior.date()}**)")
             
-            # Hacemos Merge: Actual vs Anterior
+            # Ahora el MERGE es seguro porque ambos tienen 'fecha_estancia'
             df_merge = pd.merge(
                 df_actual, 
                 df_anterior, 
-                on=['fecha_estancia', 'tipo_alojamiento'], # Nota: en df_actual la llamamos 'fecha' pero al melt hay que alinear
-                left_on=['fecha', 'tipo_alojamiento'],
-                right_on=['fecha_estancia', 'tipo_alojamiento'],
+                on=['fecha_estancia', 'tipo_alojamiento'], # Ahora sí coinciden los nombres
                 how='outer', 
                 suffixes=('_new', '_old')
             ).fillna(0)
             
             # Calculamos diferencia (Pick Up)
             df_merge['pickup'] = df_merge['cantidad_new'] - df_merge['cantidad_old']
-            
-            # Usamos la fecha correcta (coalesce)
-            df_merge['fecha_final'] = df_merge['fecha'].combine_first(df_merge['fecha_estancia'])
             
             # 1. KPIs Generales
             total_pickup = int(df_merge['pickup'].sum())
@@ -176,22 +176,23 @@ with tab1:
             cols[0].metric("Total Pick Up Global", f"{total_pickup}", delta=total_pickup)
             
             for i, tipo in enumerate(tipos_disponibles):
+                # Filtramos por tipo para sumar
                 pickup_tipo = int(df_merge[df_merge['tipo_alojamiento'] == tipo]['pickup'].sum())
                 if pickup_tipo != 0:
                     cols[i+1].metric(f"{tipo}", f"{pickup_tipo}", delta=pickup_tipo)
             
-            # 2. Gráfica de Barras por Fecha (Donde se ven las variaciones)
+            # 2. Gráfica de Barras por Fecha
             df_graph = df_merge[df_merge['pickup'] != 0].copy()
             
             if not df_graph.empty:
                 fig_pickup = px.bar(
                     df_graph, 
-                    x='fecha_final', 
+                    x='fecha_estancia', 
                     y='pickup', 
                     color='tipo_alojamiento',
                     title="Detalle de Movimientos (Nuevas Reservas vs Cancelaciones)",
                     text_auto=True,
-                    labels={'fecha_final': 'Fecha de Estancia', 'pickup': 'Variación Noches'}
+                    labels={'fecha_estancia': 'Fecha de Estancia', 'pickup': 'Variación Noches'}
                 )
                 fig_pickup.update_layout(xaxis_title="Fecha de Estancia")
                 st.plotly_chart(fig_pickup, use_container_width=True)
@@ -199,9 +200,9 @@ with tab1:
                 st.info("📉 No ha habido movimientos de reservas respecto a la última carga.")
 
         else:
-            st.warning("⚠️ Es la primera vez que subes datos. No hay historial previo para calcular Pick Up todavía.")
+            st.warning("⚠️ Es la primera vez que subes datos a la DB. No hay historial previo para calcular Pick Up todavía (necesitas al menos 2 cargas).")
 
-        # D) BOTÓN DE GUARDAR (Al final, tras ver el análisis)
+        # D) BOTÓN DE GUARDAR
         st.divider()
         col_save, col_info = st.columns([1, 2])
         
@@ -210,11 +211,11 @@ with tab1:
             fecha_final = st.date_input("Confirma la fecha de estos datos:", value=fecha_sugerida.date())
             
             if st.button("💾 GUARDAR EN HISTORIAL", type="primary"):
+                # OJO: Pasamos df_actual_wide que es el original leido del excel
                 rows = guardar_en_db(df_actual_wide, fecha_final)
                 st.success(f"¡Guardado! Base de datos actualizada con {rows} registros del día {fecha_final}.")
                 st.balloons()
-                # Forzar recarga para que si vas a la Tab 2 ya salga
-                st.session_state['refresh'] = True 
+                st.session_state['refresh'] = True
 
 # ---------------------------------------------------------
 # TAB 2: EVOLUCIÓN (BOOKING CURVE) - IGUAL QUE ANTES
