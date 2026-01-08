@@ -18,7 +18,7 @@ INVENTARIO_TOTAL = {
 }
 
 # Nombre de la hoja dentro de tu Google Sheet (pestaña inferior)
-HOJA_DB = "Hoja 1"  # Asegúrate de que coincida con tu Google Sheet
+HOJA_DB = "Datos"  # Asegúrate de que coincida con tu Google Sheet
 
 # --- FUNCIONES DE BASE DE DATOS (GOOGLE SHEETS) ---
 
