@@ -4,13 +4,10 @@ import plotly.graph_objects as go
 import plotly.express as px
 import os
 import re
-import sqlite3
 from datetime import datetime
+from streamlit_gsheets import GSheetsConnection
 
 # --- CONFIGURACIÓN ---
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DB_PATH = os.path.join(ROOT_DIR, 'camping_revenue.db')
-
 # Inventario (Capacidad total)
 INVENTARIO_TOTAL = {
     'N-4': 30, 
@@ -20,263 +17,207 @@ INVENTARIO_TOTAL = {
     'ST5': 5
 }
 
-# --- GESTIÓN DE BASE DE DATOS (SQLITE) ---
+# Nombre de la hoja dentro de tu Google Sheet (pestaña inferior)
+HOJA_DB = "Hoja 1"  # Asegúrate de que coincida con tu Google Sheet
 
-def init_db():
-    """Crea la tabla si no existe."""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS reservas (
-            fecha_estancia TEXT,
-            tipo_alojamiento TEXT,
-            cantidad INTEGER,
-            fecha_snapshot TEXT,
-            PRIMARY KEY (fecha_estancia, tipo_alojamiento, fecha_snapshot)
-        )
-    ''')
-    conn.commit()
-    conn.close()
+# --- FUNCIONES DE BASE DE DATOS (GOOGLE SHEETS) ---
 
-def guardar_en_db(df, fecha_snapshot):
-    """Guarda el dataframe en la base de datos SQL."""
-    conn = sqlite3.connect(DB_PATH)
+def cargar_datos_gsheet():
+    """Descarga toda la base de datos desde Google Sheets."""
+    # Usamos la conexión nativa de Streamlit, ttl=0 para que no cachee datos viejos
+    conn = st.connection("gsheets", type=GSheetsConnection)
+    try:
+        df = conn.read(worksheet=HOJA_DB)
+        # Aseguramos formato de fechas
+        if not df.empty and 'fecha_estancia' in df.columns:
+            df['fecha_estancia'] = pd.to_datetime(df['fecha_estancia'])
+            df['fecha_snapshot'] = pd.to_datetime(df['fecha_snapshot'])
+        return df
+    except Exception as e:
+        st.error(f"Error conectando con Google Sheets: {e}")
+        return pd.DataFrame()
+
+def guardar_en_gsheet(df_nuevo, fecha_snapshot):
+    """Añade los datos nuevos al Google Sheet, borrando duplicados de la misma fecha."""
+    conn = st.connection("gsheets", type=GSheetsConnection)
     
-    # Preparamos los datos: Pasamos de formato Ancho (Excel) a Largo (DB)
-    tipos = [c for c in INVENTARIO_TOTAL.keys() if c in df.columns]
+    # 1. Leer lo que hay actualmente
+    df_actual = conn.read(worksheet=HOJA_DB)
     
-    df_long = df.melt(id_vars=['fecha'], value_vars=tipos, var_name='tipo_alojamiento', value_name='cantidad')
+    # 2. Preparar los datos nuevos (Formato Largo)
+    tipos = [c for c in INVENTARIO_TOTAL.keys() if c in df_nuevo.columns]
+    df_long = df_nuevo.melt(id_vars=['fecha'], value_vars=tipos, var_name='tipo_alojamiento', value_name='cantidad')
     df_long.rename(columns={'fecha': 'fecha_estancia'}, inplace=True)
     df_long['fecha_snapshot'] = fecha_snapshot.strftime('%Y-%m-%d')
     
-    # Limpiamos datos viejos de ESA misma fecha de snapshot para no duplicar
-    snapshot_str = fecha_snapshot.strftime('%Y-%m-%d')
-    c = conn.cursor()
-    c.execute("DELETE FROM reservas WHERE fecha_snapshot = ?", (snapshot_str,))
-    conn.commit()
+    # Asegurar tipos en el DF nuevo
+    df_long['fecha_estancia'] = pd.to_datetime(df_long['fecha_estancia'])
+    df_long['fecha_snapshot'] = pd.to_datetime(df_long['fecha_snapshot'])
     
-    # Guardamos lo nuevo
-    df_long.to_sql('reservas', conn, if_exists='append', index=False)
-    conn.close()
+    if not df_actual.empty:
+        # Asegurar tipos en el DF actual para poder filtrar
+        df_actual['fecha_snapshot'] = pd.to_datetime(df_actual['fecha_snapshot'])
+        
+        # 3. BORRAR si ya existía una carga de ESTA misma fecha (para evitar duplicados si le das 2 veces)
+        snapshot_actual_str = fecha_snapshot.strftime('%Y-%m-%d')
+        # Filtramos para quedarnos con TODO lo que NO sea de hoy
+        df_limpio = df_actual[df_actual['fecha_snapshot'].dt.strftime('%Y-%m-%d') != snapshot_actual_str]
+        
+        # 4. Concatenar lo viejo limpio + lo nuevo
+        df_final = pd.concat([df_limpio, df_long], ignore_index=True)
+    else:
+        df_final = df_long
+
+    # 5. SUBIR (Update) al Google Sheet
+    # Ordenamos un poco para que el Excel se vea bonito
+    df_final = df_final.sort_values(by=['fecha_snapshot', 'fecha_estancia'])
+    conn.update(worksheet=HOJA_DB, data=df_final)
+    
     return len(df_long)
 
-def obtener_ultimo_snapshot_db():
-    """Recupera los datos de la ÚLTIMA carga disponible en la DB para comparar."""
-    if not os.path.exists(DB_PATH):
+def obtener_ultimo_snapshot_gsheet(df_hist):
+    """Busca el snapshot anterior en el DF descargado."""
+    if df_hist.empty:
         return None, None
-        
-    conn = sqlite3.connect(DB_PATH)
-    # 1. Buscamos cuál es la fecha más reciente registrada
-    try:
-        query_max_date = "SELECT MAX(fecha_snapshot) FROM reservas"
-        fecha_max_str = pd.read_sql(query_max_date, conn).iloc[0,0]
-        
-        if not fecha_max_str:
-            return None, None
-
-        # 2. Descargamos los datos de esa fecha
-        query_data = f"SELECT * FROM reservas WHERE fecha_snapshot = '{fecha_max_str}'"
-        df_old = pd.read_sql(query_data, conn)
-        df_old['fecha_estancia'] = pd.to_datetime(df_old['fecha_estancia'])
-        
-        conn.close()
-        return df_old, pd.to_datetime(fecha_max_str)
-    except:
-        conn.close()
-        return None, None
-
-def cargar_datos_historicos_completos():
-    """Lee todo el historial para la Tab 2."""
-    if not os.path.exists(DB_PATH):
-        return pd.DataFrame()
-    conn = sqlite3.connect(DB_PATH)
-    df = pd.read_sql("SELECT * FROM reservas", conn)
-    conn.close()
-    if not df.empty:
-        df['fecha_estancia'] = pd.to_datetime(df['fecha_estancia'])
-        df['fecha_snapshot'] = pd.to_datetime(df['fecha_snapshot'])
-        df.rename(columns={'fecha_estancia': 'fecha'}, inplace=True)
-    return df
+    
+    # Buscamos la fecha máxima
+    fecha_max = df_hist['fecha_snapshot'].max()
+    
+    # Filtramos los datos de esa fecha
+    df_ultimo = df_hist[df_hist['fecha_snapshot'] == fecha_max].copy()
+    
+    return df_ultimo, fecha_max
 
 def extraer_fecha_filename(filename):
-    """Detecta la fecha en el nombre del archivo."""
     match = re.search(r'(\d{4}-\d{2}-\d{2})', filename)
     if match:
         return pd.to_datetime(match.group(1))
     return datetime.now()
 
-# Inicializamos DB
-init_db()
-
 # --- INTERFAZ STREAMLIT ---
-st.set_page_config(page_title="Revenue Manager Pro", layout="wide")
-st.title("⛺ Revenue Management System 3.0")
+st.set_page_config(page_title="Revenue Manager Cloud", layout="wide")
+st.title("⛺ Revenue Management System (Google Sheets Edition)")
 
 tab1, tab2 = st.tabs(["📥 Importar & Analizar Pick Up", "📈 Booking Curve (Tendencia)"])
 
 # ---------------------------------------------------------
-# TAB 1: IMPORTADOR + PICK UP (CORREGIDO)
+# TAB 1: IMPORTADOR + PICK UP
 # ---------------------------------------------------------
 with tab1:
-    st.markdown("### 1. Análisis de Pick Up (Subida de Archivos)")
-    st.info("Sube el archivo de HOY. El sistema lo comparará automáticamente con el ÚLTIMO archivo guardado en la base de datos.")
+    st.markdown("### 1. Análisis de Pick Up")
+    st.info("Los datos se guardan en tu **Google Sheet privado**. No se borrarán al reiniciar.")
+    
+    # Cargar base de datos actual al inicio
+    df_hist_global = cargar_datos_gsheet()
     
     uploaded_file = st.file_uploader("Sube tu Excel actual", type=['xlsx'])
     
     if uploaded_file is not None:
-        # A) PROCESAR ARCHIVO ACTUAL
+        # A) PROCESAR
         fecha_sugerida = extraer_fecha_filename(uploaded_file.name)
         
         try:
             df_actual_wide = pd.read_excel(uploaded_file)
             if 'fecha' in df_actual_wide.columns:
                 df_actual_wide['fecha'] = pd.to_datetime(df_actual_wide['fecha'])
+                # Renombrar para evitar el error de Merge
+                df_actual_wide_merge = df_actual_wide.rename(columns={'fecha': 'fecha_estancia'})
             else:
-                st.error("El archivo no tiene columna 'fecha'.")
+                st.error("Falta columna 'fecha'")
                 st.stop()
         except Exception as e:
-            st.error(f"Error leyendo archivo: {e}")
+            st.error(f"Error archivo: {e}")
             st.stop()
 
-        # Transformamos el actual a formato largo
+        # Formato largo para comparar
         tipos_disponibles = [c for c in INVENTARIO_TOTAL.keys() if c in df_actual_wide.columns]
-        df_actual = df_actual_wide.melt(id_vars=['fecha'], value_vars=tipos_disponibles, var_name='tipo_alojamiento', value_name='cantidad')
-        
-        # --- CORRECCIÓN CLAVE AQUÍ ---
-        # Renombramos 'fecha' a 'fecha_estancia' para que coincida con la base de datos
-        df_actual.rename(columns={'fecha': 'fecha_estancia'}, inplace=True)
-        # -----------------------------
+        df_actual = df_actual_wide_merge.melt(id_vars=['fecha_estancia'], value_vars=tipos_disponibles, var_name='tipo_alojamiento', value_name='cantidad')
 
-        # B) BUSCAR EL ANTERIOR EN LA DB
-        df_anterior, fecha_anterior = obtener_ultimo_snapshot_db()
+        # B) BUSCAR EL ANTERIOR EN LA DB DESCARGADA
+        df_anterior, fecha_anterior = obtener_ultimo_snapshot_gsheet(df_hist_global)
         
         st.divider()
         
-        # C) COMPARATIVA (PICK UP)
+        # C) COMPARATIVA
         if df_anterior is not None:
             st.subheader(f"📊 Informe de Pick Up")
-            st.caption(f"Comparando archivo actual (**{fecha_sugerida.date()}**) vs Base de Datos (**{fecha_anterior.date()}**)")
+            st.caption(f"Comparando con snapshot: **{fecha_anterior.date()}**")
             
-            # Ahora el MERGE es seguro porque ambos tienen 'fecha_estancia'
             df_merge = pd.merge(
-                df_actual, 
-                df_anterior, 
-                on=['fecha_estancia', 'tipo_alojamiento'], # Ahora sí coinciden los nombres
-                how='outer', 
-                suffixes=('_new', '_old')
+                df_actual, df_anterior, 
+                on=['fecha_estancia', 'tipo_alojamiento'], 
+                how='outer', suffixes=('_new', '_old')
             ).fillna(0)
             
-            # Calculamos diferencia (Pick Up)
             df_merge['pickup'] = df_merge['cantidad_new'] - df_merge['cantidad_old']
             
-            # 1. KPIs Generales
             total_pickup = int(df_merge['pickup'].sum())
             cols = st.columns(len(tipos_disponibles) + 1)
-            
-            cols[0].metric("Total Pick Up Global", f"{total_pickup}", delta=total_pickup)
+            cols[0].metric("Total Pick Up", f"{total_pickup}", delta=total_pickup)
             
             for i, tipo in enumerate(tipos_disponibles):
-                # Filtramos por tipo para sumar
-                pickup_tipo = int(df_merge[df_merge['tipo_alojamiento'] == tipo]['pickup'].sum())
-                if pickup_tipo != 0:
-                    cols[i+1].metric(f"{tipo}", f"{pickup_tipo}", delta=pickup_tipo)
+                pk = int(df_merge[df_merge['tipo_alojamiento'] == tipo]['pickup'].sum())
+                if pk != 0:
+                    cols[i+1].metric(tipo, pk, delta=pk)
             
-            # 2. Gráfica de Barras por Fecha
-            df_graph = df_merge[df_merge['pickup'] != 0].copy()
-            
+            df_graph = df_merge[df_merge['pickup'] != 0]
             if not df_graph.empty:
-                fig_pickup = px.bar(
-                    df_graph, 
-                    x='fecha_estancia', 
-                    y='pickup', 
-                    color='tipo_alojamiento',
-                    title="Detalle de Movimientos (Nuevas Reservas vs Cancelaciones)",
-                    text_auto=True,
-                    labels={'fecha_estancia': 'Fecha de Estancia', 'pickup': 'Variación Noches'}
-                )
-                fig_pickup.update_layout(xaxis_title="Fecha de Estancia")
-                st.plotly_chart(fig_pickup, use_container_width=True)
+                fig = px.bar(df_graph, x='fecha_estancia', y='pickup', color='tipo_alojamiento', title="Pick Up por día")
+                st.plotly_chart(fig, use_container_width=True)
             else:
-                st.info("📉 No ha habido movimientos de reservas respecto a la última carga.")
-
+                st.info("Sin cambios respecto a la última carga.")
         else:
-            st.warning("⚠️ Es la primera vez que subes datos a la DB. No hay historial previo para calcular Pick Up todavía (necesitas al menos 2 cargas).")
+            st.warning("Primera carga: No hay historial previo en el Google Sheet.")
 
-        # D) BOTÓN DE GUARDAR
+        # D) GUARDAR
         st.divider()
-        col_save, col_info = st.columns([1, 2])
+        fecha_final = st.date_input("Fecha snapshot:", value=fecha_sugerida.date())
         
-        with col_save:
-            st.write("### ¿Datos correctos?")
-            fecha_final = st.date_input("Confirma la fecha de estos datos:", value=fecha_sugerida.date())
-            
-            if st.button("💾 GUARDAR EN HISTORIAL", type="primary"):
-                # OJO: Pasamos df_actual_wide que es el original leido del excel
-                rows = guardar_en_db(df_actual_wide, fecha_final)
-                st.success(f"¡Guardado! Base de datos actualizada con {rows} registros del día {fecha_final}.")
-                st.balloons()
-                st.session_state['refresh'] = True
+        if st.button("☁️ GUARDAR EN GOOGLE SHEETS", type="primary"):
+            with st.spinner("Conectando con Google..."):
+                filas = guardar_en_gsheet(df_actual_wide, fecha_final)
+            st.success(f"¡Guardado! Tu Google Sheet ahora tiene los datos del {fecha_final}.")
+            st.cache_data.clear() # Limpiar caché para recargar datos frescos
+            st.rerun()
 
 # ---------------------------------------------------------
-# TAB 2: EVOLUCIÓN (BOOKING CURVE) - IGUAL QUE ANTES
+# TAB 2: EVOLUCIÓN
 # ---------------------------------------------------------
 with tab2:
-    st.header("⏳ Análisis de Curvas de Llenado")
+    st.header("⏳ Análisis de Tendencias (Desde Cloud)")
     
-    if st.button("🔄 Actualizar Gráficas"):
-        pass # Streamlit recarga al pulsar
+    if st.button("🔄 Refrescar Datos"):
+        st.cache_data.clear()
+        st.rerun()
         
-    df_hist = cargar_datos_historicos_completos()
+    # Usamos la variable cargada al inicio
+    df_hist = df_hist_global
     
     if not df_hist.empty:
-        # Filtros
         c1, c2 = st.columns(2)
         with c1:
             tipo = st.selectbox("Alojamiento:", list(INVENTARIO_TOTAL.keys()))
         with c2:
-            fechas_estancia = st.date_input("Rango de Estancia:", [])
+            fechas = st.date_input("Rango Estancia:", [])
             
-        if len(fechas_estancia) == 2:
-            start, end = pd.to_datetime(fechas_estancia[0]), pd.to_datetime(fechas_estancia[1])
+        if len(fechas) == 2:
+            start, end = pd.to_datetime(fechas[0]), pd.to_datetime(fechas[1])
+            mask = (df_hist['tipo_alojamiento'] == tipo) & (df_hist['fecha_estancia'] >= start) & (df_hist['fecha_estancia'] <= end)
+            df_filt = df_hist[mask].copy()
             
-            # Filtro fecha estancia + tipo
-            mask = (df_hist['tipo_alojamiento'] == tipo) & \
-                   (df_hist['fecha'] >= start) & \
-                   (df_hist['fecha'] <= end)
-            
-            df_filtered = df_hist[mask].copy()
-            
-            if not df_filtered.empty:
-                # 1. CURVA (Suma agrupada por snapshot)
-                curva = df_filtered.groupby('fecha_snapshot')['cantidad'].sum().reset_index()
-                curva.sort_values('fecha_snapshot', inplace=True)
+            if not df_filt.empty:
+                curva = df_filt.groupby('fecha_snapshot')['cantidad'].sum().reset_index().sort_values('fecha_snapshot')
                 
-                # 2. KPI ACTUAL (Último snapshot)
-                ultimo_snapshot = df_filtered['fecha_snapshot'].max()
-                total_actual = curva[curva['fecha_snapshot'] == ultimo_snapshot]['cantidad'].values[0]
-                
-                # Visualización
-                st.metric(f"Total Noches Reservadas ({tipo})", int(total_actual))
+                # KPI Actual
+                ultimo_snap = curva['fecha_snapshot'].max()
+                val_actual = curva[curva['fecha_snapshot'] == ultimo_snap]['cantidad'].values[0]
+                st.metric(f"Reservas Actuales ({tipo})", int(val_actual))
                 
                 fig = go.Figure()
-                fig.add_trace(go.Scatter(
-                    x=curva['fecha_snapshot'], 
-                    y=curva['cantidad'],
-                    mode='lines+markers+text',
-                    text=curva['cantidad'],
-                    textposition="top left",
-                    name=tipo,
-                    line=dict(color='royalblue', width=3)
-                ))
-                
-                fig.update_layout(
-                    title=f"Curva de Evolución: {tipo}",
-                    xaxis_title="Fecha de Lectura",
-                    yaxis_title="Noches Acumuladas",
-                    template="plotly_white"
-                )
+                fig.add_trace(go.Scatter(x=curva['fecha_snapshot'], y=curva['cantidad'], mode='lines+markers', name=tipo))
+                fig.update_layout(title=f"Curva de Llenado: {tipo}", xaxis_title="Fecha Lectura", yaxis_title="Reservas Acumuladas")
                 st.plotly_chart(fig, use_container_width=True)
             else:
                 st.warning("No hay datos para ese rango.")
     else:
-        st.info("Sube archivos en la Pestaña 1 para ver el historial.")
+        st.info("El Google Sheet está vacío.")
