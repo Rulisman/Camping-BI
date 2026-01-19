@@ -188,10 +188,10 @@ with tab1:
             st.rerun()
 
 # ---------------------------------------------------------
-# TAB 2: EVOLUCIÓN
+# TAB 2: EVOLUCIÓN Y OCUPACIÓN REAL
 # ---------------------------------------------------------
 with tab2:
-    st.header("⏳ Análisis de Tendencias (Desde Cloud)")
+    st.header("⏳ Análisis de Tendencias y Ocupación")
     
     if st.button("🔄 Refrescar Datos"):
         st.cache_data.clear()
@@ -201,6 +201,7 @@ with tab2:
     df_hist = df_hist_global
     
     if not df_hist.empty:
+        # Filtros Superiores
         c1, c2 = st.columns(2)
         with c1:
             tipo = st.selectbox("Alojamiento:", list(INVENTARIO_TOTAL.keys()))
@@ -209,21 +210,91 @@ with tab2:
             
         if len(fechas) == 2:
             start, end = pd.to_datetime(fechas[0]), pd.to_datetime(fechas[1])
+            
+            # Filtramos datos para ese tipo y rango de fechas
             mask = (df_hist['tipo_alojamiento'] == tipo) & (df_hist['fecha_estancia'] >= start) & (df_hist['fecha_estancia'] <= end)
             df_filt = df_hist[mask].copy()
             
             if not df_filt.empty:
+                # --- PREPARACIÓN DE DATOS ---
+                
+                # 1. Datos para la CURVA (Evolución histórica)
                 curva = df_filt.groupby('fecha_snapshot')['cantidad'].sum().reset_index().sort_values('fecha_snapshot')
                 
-                # KPI Actual
+                # 2. Datos para la OCUPACIÓN REAL (Foto actual del último día cargado)
                 ultimo_snap = curva['fecha_snapshot'].max()
-                val_actual = curva[curva['fecha_snapshot'] == ultimo_snap]['cantidad'].values[0]
-                st.metric(f"Reservas Actuales ({tipo})", int(val_actual))
+                df_actual_dia = df_filt[df_filt['fecha_snapshot'] == ultimo_snap].copy()
                 
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(x=curva['fecha_snapshot'], y=curva['cantidad'], mode='lines+markers', name=tipo))
-                fig.update_layout(title=f"Curva de Llenado: {tipo}", xaxis_title="Fecha Lectura", yaxis_title="Reservas Acumuladas")
-                st.plotly_chart(fig, use_container_width=True)
+                # --- CÁLCULOS DE KPI (Occupancy %) ---
+                capacidad_diaria = INVENTARIO_TOTAL.get(tipo, 1) # Capacidad de ese tipo (ej: 30 parcelas)
+                total_noches_vendidas = curva[curva['fecha_snapshot'] == ultimo_snap]['cantidad'].values[0]
+                
+                # Capacidad total del periodo seleccionado (Días del rango * Unidades)
+                dias_rango = (end - start).days + 1
+                capacidad_total_periodo = capacidad_diaria * dias_rango
+                
+                # % Ocupación Media del periodo
+                ocupacion_media = (total_noches_vendidas / capacidad_total_periodo) * 100
+                
+                # --- VISUALIZACIÓN DE KPIs ---
+                col1, col2, col3 = st.columns(3)
+                col1.metric(f"Total Noches Vendidas", f"{int(total_noches_vendidas)}")
+                col2.metric("Capacidad Total Periodo", f"{capacidad_total_periodo} noches disp.")
+                col3.metric("🔥 Ocupación Media", f"{ocupacion_media:.1f}%")
+                
+                st.divider()
+
+                # --- GRÁFICA 1: BOOKING CURVE (PACE) ---
+                st.subheader(f"📈 Curva de Llenado (Pace) - {tipo}")
+                fig_curve = go.Figure()
+                fig_curve.add_trace(go.Scatter(
+                    x=curva['fecha_snapshot'], 
+                    y=curva['cantidad'], 
+                    mode='lines+markers', 
+                    name='Noches Acumuladas',
+                    line=dict(color='royalblue', width=3)
+                ))
+                fig_curve.update_layout(
+                    xaxis_title="Fecha de Lectura", 
+                    yaxis_title="Noches Vendidas",
+                    template="plotly_white",
+                    height=350
+                )
+                st.plotly_chart(fig_curve, use_container_width=True)
+
+                # --- GRÁFICA 2: OCUPACIÓN DIARIA (REAL POR DÍA) ---
+                st.divider()
+                st.subheader(f"📅 Calendario de Ocupación Real (On The Books)")
+                st.caption(f"Radiografía día a día según los datos más recientes ({ultimo_snap.date()})")
+                
+                # Agrupamos por día de estancia para ver ocupación diaria
+                ocup_diaria = df_actual_dia.groupby('fecha_estancia')['cantidad'].sum().reset_index()
+                
+                # Calculamos % diario
+                ocup_diaria['% Ocupacion'] = (ocup_diaria['cantidad'] / capacidad_diaria) * 100
+                
+                # Gráfica de Barras
+                fig_bar = px.bar(
+                    ocup_diaria,
+                    x='fecha_estancia',
+                    y='% Ocupacion',
+                    title=f"Ocupación por Día - {tipo}",
+                    labels={'fecha_estancia': 'Fecha Estancia', '% Ocupacion': '% Ocupación'},
+                    text_auto='.0f', # Muestra el % sin decimales en la barra
+                    color='% Ocupacion', # Pinta más oscuro si está más lleno
+                    color_continuous_scale='Blues'
+                )
+                
+                # Línea roja marcando el 100%
+                fig_bar.add_hline(y=100, line_dash="dot", line_color="red", annotation_text="Completo (100%)")
+                
+                fig_bar.update_layout(
+                    yaxis_range=[0, 110], # Dejamos aire arriba
+                    template="plotly_white"
+                )
+                
+                st.plotly_chart(fig_bar, use_container_width=True)
+
             else:
                 st.warning("No hay datos para ese rango.")
     else:
